@@ -21,7 +21,7 @@ from aiohttp import web, ClientSession
 BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
 LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID', '0')  # Default to '0' if not set
 ADMIN_USER_IDS = os.getenv('ADMIN_USER_IDS', '').split(',')  # Default to empty list if not set
-GPLINK_API = os.getenv('GPLINK_API', 'YOUR_GPLINK_API')  # Updated to correct env variable name
+GPLINK_API = os.getenv('GPLINK_API', 'YOUR_GPLINK_API')  # gplinks.co API token
 PORT = int(os.getenv('PORT', 10000))  # Render assigns PORT, default to 10000
 
 # Convert LOG_CHANNEL_ID to int and validate
@@ -93,9 +93,6 @@ user_states = defaultdict(lambda: {
     'season_access': {},
 })
 
-# Lockout duration (24 hours in seconds)
-LOCKOUT_DURATION = 24 * 60 * 60
-
 # Auto-delete duration (1 hour in seconds)
 AUTO_DELETE_DURATION = 60 * 60
 
@@ -105,107 +102,92 @@ LANGUAGES = {
         'welcome': 'Choose an option:',
         'invalid_season': 'Invalid season selection.',
         'season_not_found': 'Season not found.',
-        'help': 'Available commands:\n/start - Start the bot and see the menu\n/clearhistory - Remove history\n/owner - Show owner info\n/mainchannel - Join our main channel\n/guide - View usage guide\n/broadcast - Send a message to all users (admin only)\n/getchatid - Get the chat ID of this group (for debugging)',
+        'episode_not_found': 'Episode not found.',
+        'invalid_episode': 'Invalid episode number. Please use /episode <number> (e.g., /episode 100).',
+        'help': 'Available commands:\n/start - Start the bot and see the menu\n/episode <number> - Get a specific episode link\n/clearhistory - Remove history\n/owner - Show owner info\n/mainchannel - Join our main channel\n/guide - View usage guide\n/broadcast - Send a message to all users (admin only)\n/getchatid - Get the chat ID of this group (for debugging)',
         'settings': 'Settings are not yet implemented in this version.',
         'status': 'Bot is running normally.',
         'status_error': 'Bot is experiencing issues. Please try again later.',
-        'link_locked': 'You have already accessed this season’s link. Please wait 24 hours to access it again.',
         'clearhistory': 'Your history has been cleared! 🗑️',
         'owner': 'Owner: @Dhileep_S 👨‍💼',
         'mainchannel': 'Join our main channel: @bot_paiyan_official 📢',
-        'guide': '✨ **Usage Guide** ✨\n1. 🌟 Click /start to see the season menu.\n2. 🎬 Select a season (e.g., Season 1).\n3. 🔗 Click "Link-Shortner" to get the season link.\n4. ✅ Resolve the link to access your file.\n5. ℹ️ Use /help for more commands!',
+        'guide': '✨ **Usage Guide** ✨\n1. 🌟 Click /start to see the season menu.\n2. 🎬 Select a season (e.g., Season 1).\n3. 🔗 Click "Link-Shortner" to get the season link.\n4. 📺 Use /episode <number> to get a specific episode (e.g., /episode 100).\n5. ✅ Resolve the link to access your file.\n6. ℹ️ Use /help for more commands!',
         'broadcast': 'Broadcast message sent (logged to group). 📢',
         'not_allowed': 'You are not allowed to use this command. 🚫 Only admins can broadcast.'
     }
 }
 
-# Season data (Naruto seasons, removed static 'link' since we'll generate it dynamically)
-season_data = {
-    "season_1": {
-        "start_id_ref": "https://t.me/Naruto_multilangbot?start=season1",
-        "episodes": {
-            "Episode 1": "https://example.com/season1/episode1",
-            "Episode 2": "https://example.com/season1/episode2",
+# Generate season data dynamically
+def generate_season_data():
+    season_data = {}
+    episodes_per_season = 25
+    total_episodes = 220
+    num_seasons = (total_episodes + episodes_per_season - 1) // episodes_per_season  # Ceiling division
+
+    for season_num in range(1, num_seasons + 1):
+        season_key = f"season_{season_num}"
+        start_episode = (season_num - 1) * episodes_per_season + 1
+        end_episode = min(season_num * episodes_per_season, total_episodes)
+        
+        episodes = {}
+        for ep_num in range(start_episode, end_episode + 1):
+            ep_key = f"Episode {ep_num}"
+            episodes[ep_num] = f"https://example.com/season{season_num}/episode{ep_num}"
+
+        season_data[season_key] = {
+            "start_id_ref": f"https://t.me/Naruto_multilangbot?start=season{season_num}",
+            "episodes": episodes
         }
-    },
-    "season_2": {
-        "start_id_ref": "https://t.me/Naruto_multilangbot?start=season2",
-        "episodes": {
-            "Episode 1": "https://example.com/season2/episode1",
-            "Episode 2": "https://example.com/season2/episode2",
-        }
-    },
-    "season_3": {
-        "start_id_ref": "https://t.me/Naruto_multilangbot?start=season3",
-        "episodes": {
-            "Episode 1": "https://example.com/season3/episode1",
-            "Episode 2": "https://example.com/season3/episode2",
-        }
-    },
-    "season_4": {
-        "start_id_ref": "https://t.me/Naruto_multilangbot?start=season4",
-        "episodes": {
-            "Episode 1": "https://example.com/season4/episode1",
-            "Episode 2": "https://example.com/season4/episode2",
-        }
-    },
-    "season_5": {
-        "start_id_ref": "https://t.me/Naruto_multilangbot?start=season5",
-        "episodes": {
-            "Episode 1": "https://example.com/season5/episode1",
-            "Episode 2": "https://example.com/season5/episode2",
-        }
-    },
-    "season_6": {
-        "start_id_ref": "https://t.me/Naruto_multilangbot?start=season6",
-        "episodes": {
-            "Episode 1": "https://example.com/season6/episode1",
-            "Episode 2": "https://example.com/season6/episode2",
-        }
-    },
-    "season_7": {
-        "start_id_ref": "https://t.me/Naruto_multilangbot?start=season7",
-        "episodes": {
-            "Episode 1": "https://example.com/season7/episode1",
-            "Episode 2": "https://example.com/season7/episode2",
-        }
-    },
-    "season_8": {
-        "start_id_ref": "https://t.me/Naruto_multilangbot?start=season8",
-        "episodes": {
-            "Episode 1": "https://example.com/season8/episode1",
-            "Episode 2": "https://example.com/season8/episode2",
-        }
-    },
-    "season_9": {
-        "start_id_ref": "https://t.me/Naruto_multilangbot?start=season9",
-        "episodes": {
-            "Episode 1": "https://example.com/season9/episode1",
-            "Episode 2": "https://example.com/season9/episode2",
-        }
-    },
-    "season_10": {
+
+    # Add Season 10 as a placeholder (no episodes)
+    season_data["season_10"] = {
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season10",
-        "episodes": {
-            "Episode 1": "https://example.com/season10/episode1",
-            "Episode 2": "https://example.com/season10/episode2",
-        }
-    },
-}
+        "episodes": {}
+    }
+
+    return season_data
+
+# Season data
+season_data = generate_season_data()
+
+# Helper function to send messages and schedule deletion
+async def send_message_with_auto_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_markup=None):
+    try:
+        message = await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=reply_markup
+        )
+        asyncio.create_task(schedule_message_deletion(context, chat_id, message.message_id))
+        return message
+    except TelegramError as e:
+        logger.error(f"Error sending message: {str(e)}")
+        message = await context.bot.send_message(
+            chat_id=chat_id,
+            text="An error occurred. Please try again later."
+        )
+        asyncio.create_task(schedule_message_deletion(context, chat_id, message.message_id))
+        return message
+
+# Helper function to schedule message deletion
+async def schedule_message_deletion(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
+    try:
+        await asyncio.sleep(AUTO_DELETE_DURATION)
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        logger.info(f"Deleted message {message_id} in chat {chat_id}")
+    except TelegramError as e:
+        logger.error(f"Failed to delete message {message_id}: {str(e)}")
 
 # Function to generate a shortlink using gplinks.co API
-async def shorten_url(long_url: str, season_key: str) -> str:
-    # Use the season number as part of the alias for uniqueness
-    season_number = season_key.split('_')[1]
-    alias = f"season{season_number}_{int(time.time())}"  # Unique alias with timestamp
+async def shorten_url(long_url: str, identifier: str) -> str:
+    alias = f"{identifier}_{int(time.time())}"  # Unique alias with timestamp
     api_url = "https://api.gplinks.com/api"
     params = {
-        "api": GPLINK_API,  # Updated to use the correct variable name
+        "api": GPLINK_API,
         "url": long_url,
         "alias": alias,
         "format": "text"
     }
-    # URL-encode the query parameters
     query_string = urlencode(params)
     full_url = f"{api_url}?{query_string}"
     
@@ -215,303 +197,408 @@ async def shorten_url(long_url: str, season_key: str) -> str:
                 if response.status == 200:
                     short_url = await response.text()
                     logger.info(f"Shortened URL: {long_url} -> {short_url}")
-                    return short_url.strip()  # Ensure no trailing whitespace
+                    return short_url.strip()
                 else:
                     logger.error(f"Failed to shorten URL: HTTP {response.status}")
-                    return long_url  # Fallback to the original URL if shortening fails
+                    return long_url
     except Exception as e:
         logger.error(f"Error shortening URL: {str(e)}")
-        return long_url  # Fallback to the original URL if an error occurs
+        return long_url
 
-async def schedule_message_deletion(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
-    try:
-        await asyncio.sleep(AUTO_DELETE_DURATION)
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-        logger.info(f"Deleted message {message_id} in chat {chat_id}")
-    except TelegramError as e:
-        logger.error(f"Failed to delete message {message_id}: {str(e)}")
+# Function to find an episode by number
+def find_episode(episode_number: int):
+    for season_key, season_info in season_data.items():
+        episodes = season_info["episodes"]
+        if episode_number in episodes:
+            season_num = int(season_key.split('_')[1])
+            return season_key, season_num, episodes[episode_number]
+    return None, None, None
 
 # Debug command to get the chat ID
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     logger.info(f"Chat ID requested: {chat_id}")
+    await send_message_with_auto_delete(
+        context,
+        chat_id,
+        f"This chat's ID is: {chat_id}"
+    )
+
+# Handler for episode requests
+async def episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
+
+    # Check if an episode number was provided
+    if not context.args:
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['invalid_episode']
+        )
+        return
+
     try:
-        message = await update.message.reply_text(f"This chat's ID is: {chat_id}")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+        episode_number = int(context.args[0])
+        if episode_number < 1 or episode_number > 220:
+            await send_message_with_auto_delete(
+                context,
+                chat_id,
+                LANGUAGES[lang]['invalid_episode']
+            )
+            return
+
+        # Find the episode in season_data
+        season_key, season_num, episode_url = find_episode(episode_number)
+        if not episode_url:
+            await send_message_with_auto_delete(
+                context,
+                chat_id,
+                LANGUAGES[lang]['episode_not_found']
+            )
+            return
+
+        # Shorten the episode URL
+        short_url = await shorten_url(episode_url, f"episode{episode_number}")
+        
+        # Create the "How to Resolve" button
+        keyboard = [
+            [InlineKeyboardButton("How to Resolve", url="https://t.me/+_SQNyZD8hns3NzY1")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Send the episode link
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            f"Episode {episode_number} (Season {season_num}) Link: {short_url}",
+            reply_markup=reply_markup
+        )
+
+        logger.info(f"User {user_id} requested Episode {episode_number}: {short_url}")
+
+        # Log to group
+        if IS_LOGGING_ENABLED:
+            try:
+                await context.bot.send_message(
+                    LOG_CHANNEL_ID,
+                    f"📺 {update.effective_user.first_name} requested Episode {episode_number} (Season {season_num})"
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (episode request): {str(e)}")
+
+    except ValueError:
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['invalid_episode']
+        )
     except TelegramError as e:
-        logger.error(f"Error in get_chat_id command: {str(e)}")
-        message = await update.message.reply_text("An error occurred. Please try again later.")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+        logger.error(f"Error in episode command: {str(e)}")
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            "An error occurred. Please try again later."
+        )
 
 async def send_season_info(update: Update, context: ContextTypes.DEFAULT_TYPE, season_key: str):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
 
     season_info = season_data.get(season_key)
     if not season_info:
-        message = await context.bot.send_message(chat_id=update.effective_chat.id, text=LANGUAGES[lang]['season_not_found'])
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['season_not_found']
+        )
         return
 
-    try:
-        start_id_reference = season_info["start_id_ref"]
-        season_name = f"Season {season_key.split('_')[1]}"
-        logger.info(f"User {user_id} accessed {season_key}: {start_id_reference}")
+    start_id_reference = season_info["start_id_ref"]
+    season_name = f"Season {season_key.split('_')[1]}"
+    logger.info(f"User {user_id} accessed {season_key}: {start_id_reference}")
 
-        season_access = user_states[user_id]['season_access'].get(season_key, {})
-        current_time = time.time()
+    season_access = user_states[user_id]['season_access'].get(season_key, {})
+    current_time = time.time()
 
-        if not season_access.get('first_access_time'):
-            user_states[user_id]['season_access'][season_key] = {
-                'first_access_time': current_time,
-                'resolved_time': None
-            }
-            keyboard = [
-                [InlineKeyboardButton(season_name, callback_data=f"info_{season_key}")],
-                [InlineKeyboardButton("Link-Shortner", callback_data=f"resolve_{season_key}")],
-                [InlineKeyboardButton("How to Resolve", url="https://t.me/+_SQNyZD8hns3NzY1")]
-            ]
-        else:
-            resolved_time = season_access.get('resolved_time')
-            if resolved_time and (current_time - resolved_time) < LOCKOUT_DURATION:
-                message = await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=LANGUAGES[lang]['link_locked']
-                )
-                asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
-                return
-            else:
-                keyboard = [
-                    [InlineKeyboardButton(season_name, callback_data=f"info_{season_key}")],
-                    [InlineKeyboardButton("Link-Shortner", callback_data=f"resolve_{season_key}")],
-                    [InlineKeyboardButton("How to Resolve", url="https://t.me/+_SQNyZD8hns3NzY1")]
-                ]
+    # Set first_access_time for logging purposes
+    if not season_access.get('first_access_time'):
+        user_states[user_id]['season_access'][season_key] = {
+            'first_access_time': current_time,
+            'resolved_time': None
+        }
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"Accessing {season_name}:",
-            reply_markup=reply_markup
-        )
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
-        user_states[user_id]['last_season'] = season_key
+    keyboard = [
+        [InlineKeyboardButton(season_name, callback_data=f"info_{season_key}")],
+        [InlineKeyboardButton("Link-Shortner", callback_data=f"resolve_{season_key}")],
+        [InlineKeyboardButton("How to Resolve", url="https://t.me/+_SQNyZD8hns3NzY1")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Log to group with error handling
-        if IS_LOGGING_ENABLED:
-            try:
-                await context.bot.send_message(LOG_CHANNEL_ID, f"📥 {update.effective_user.first_name} accessed {season_name}")
-            except TelegramError as e:
-                logger.error(f"Failed to log to group (season info): {str(e)}")
-    except TelegramError as e:
-        logger.error(f"Error sending season info: {str(e)}")
-        message = await context.bot.send_message(chat_id=update.effective_chat.id, text="An error occurred. Please try again later.")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    await send_message_with_auto_delete(
+        context,
+        chat_id,
+        f"Accessing {season_name}:",
+        reply_markup=reply_markup
+    )
+    user_states[user_id]['last_season'] = season_key
+
+    # Log to group
+    if IS_LOGGING_ENABLED:
+        try:
+            await context.bot.send_message(
+                LOG_CHANNEL_ID,
+                f"📥 {update.effective_user.first_name} accessed {season_name}"
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to log to group (season info): {str(e)}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
 
     # Check if the /start command has a parameter (e.g., /start season1)
     start_param = context.args[0] if context.args else None
 
-    try:
-        # If a start parameter is provided (e.g., season1, season2, etc.)
-        if start_param and start_param.startswith('season'):
-            season_key = f"season_{start_param.split('season')[1]}"
-            # Validate season_key exists in season_data
-            if season_key in season_data:
-                await send_season_info(update, context, season_key)
-                logger.info(f"User {user_id} used /start with parameter {start_param}")
-            else:
-                message = await update.message.reply_text(LANGUAGES[lang]['season_not_found'])
-                asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
-                logger.info(f"User {user_id} used /start with invalid parameter {start_param}")
+    # If a start parameter is provided (e.g., season1, season2, etc.)
+    if start_param and start_param.startswith('season'):
+        season_key = f"season_{start_param.split('season')[1]}"
+        if season_key in season_data:
+            await send_season_info(update, context, season_key)
+            logger.info(f"User {user_id} used /start with parameter {start_param}")
         else:
-            # Default behavior: Show the season selection menu
-            keyboard = [
-                ['Season 1'],
-                ['Season 2'],
-                ['Season 3'],
-                ['Season 4'],
-                ['Season 5'],
-                ['Season 6'],
-                ['Season 7'],
-                ['Season 8'],
-                ['Season 9'],
-                ['Season 10'],
-                ['Help'],
-                ['Settings']
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-            message = await update.message.reply_text(LANGUAGES[lang]['welcome'], reply_markup=reply_markup)
-            logger.info(f"User {user_id} used /start command")
+            await send_message_with_auto_delete(
+                context,
+                chat_id,
+                LANGUAGES[lang]['season_not_found']
+            )
+            logger.info(f"User {user_id} used /start with invalid parameter {start_param}")
+    else:
+        # Default behavior: Show the season selection menu
+        keyboard = [
+            ['Season 1'],
+            ['Season 2'],
+            ['Season 3'],
+            ['Season 4'],
+            ['Season 5'],
+            ['Season 6'],
+            ['Season 7'],
+            ['Season 8'],
+            ['Season 9'],
+            ['Season 10'],
+            ['Help'],
+            ['Settings']
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['welcome'],
+            reply_markup=reply_markup
+        )
+        logger.info(f"User {user_id} used /start command")
 
-            asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
-
-        # Log to group with error handling
-        if IS_LOGGING_ENABLED:
-            try:
-                await context.bot.send_message(LOG_CHANNEL_ID, f"🚀 {update.effective_user.first_name} started the bot")
-            except TelegramError as e:
-                logger.error(f"Failed to log to group (start command): {str(e)}")
-    except TelegramError as e:
-        logger.error(f"Error in start command: {str(e)}")
-        message = await update.message.reply_text("An error occurred. Please try again later.")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    # Log to group
+    if IS_LOGGING_ENABLED:
+        try:
+            await context.bot.send_message(
+                LOG_CHANNEL_ID,
+                f"🚀 {update.effective_user.first_name} started the bot"
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to log to group (start command): {str(e)}")
 
 async def clearhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
-    try:
-        user_states[user_id] = {
-            'language': 'en',
-            'last_action': None,
-            'last_season': None,
-            'season_access': {},
-        }
-        message = await update.message.reply_text(LANGUAGES[lang]['clearhistory'])
-        logger.info(f"User {user_id} used /clearhistory command")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    chat_id = update.effective_chat.id
 
-        # Log to group with error handling
-        if IS_LOGGING_ENABLED:
-            try:
-                await context.bot.send_message(LOG_CHANNEL_ID, f"🗑️ {update.effective_user.first_name} cleared their history")
-            except TelegramError as e:
-                logger.error(f"Failed to log to group (clearhistory command): {str(e)}")
-    except TelegramError as e:
-        logger.error(f"Error in clearhistory command: {str(e)}")
-        message = await update.message.reply_text("An error occurred. Please try again later.")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    user_states[user_id] = {
+        'language': 'en',
+        'last_action': None,
+        'last_season': None,
+        'season_access': {},
+    }
+    await send_message_with_auto_delete(
+        context,
+        chat_id,
+        LANGUAGES[lang]['clearhistory']
+    )
+    logger.info(f"User {user_id} used /clearhistory command")
+
+    # Log to group
+    if IS_LOGGING_ENABLED:
+        try:
+            await context.bot.send_message(
+                LOG_CHANNEL_ID,
+                f"🗑️ {update.effective_user.first_name} cleared their history"
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to log to group (clearhistory command): {str(e)}")
 
 async def owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
-    try:
-        message = await update.message.reply_text(LANGUAGES[lang]['owner'])
-        logger.info(f"User {user_id} used /owner command")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    chat_id = update.effective_chat.id
 
-        # Log to group with error handling
-        if IS_LOGGING_ENABLED:
-            try:
-                await context.bot.send_message(LOG_CHANNEL_ID, f"👨‍💼 {update.effective_user.first_name} requested owner info")
-            except TelegramError as e:
-                logger.error(f"Failed to log to group (owner command): {str(e)}")
-    except TelegramError as e:
-        logger.error(f"Error in owner command: {str(e)}")
-        message = await update.message.reply_text("An error occurred. Please try again later.")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    await send_message_with_auto_delete(
+        context,
+        chat_id,
+        LANGUAGES[lang]['owner']
+    )
+    logger.info(f"User {user_id} used /owner command")
+
+    # Log to group
+    if IS_LOGGING_ENABLED:
+        try:
+            await context.bot.send_message(
+                LOG_CHANNEL_ID,
+                f"👨‍💼 {update.effective_user.first_name} requested owner info"
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to log to group (owner command): {str(e)}")
 
 async def mainchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
-    try:
-        message = await update.message.reply_text(LANGUAGES[lang]['mainchannel'])
-        logger.info(f"User {user_id} used /mainchannel command")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    chat_id = update.effective_chat.id
 
-        # Log to group with error handling
-        if IS_LOGGING_ENABLED:
-            try:
-                await context.bot.send_message(LOG_CHANNEL_ID, f"📢 {update.effective_user.first_name} requested the main channel")
-            except TelegramError as e:
-                logger.error(f"Failed to log to group (mainchannel command): {str(e)}")
-    except TelegramError as e:
-        logger.error(f"Error in mainchannel command: {str(e)}")
-        message = await update.message.reply_text("An error occurred. Please try again later.")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    await send_message_with_auto_delete(
+        context,
+        chat_id,
+        LANGUAGES[lang]['mainchannel']
+    )
+    logger.info(f"User {user_id} used /mainchannel command")
+
+    # Log to group
+    if IS_LOGGING_ENABLED:
+        try:
+            await context.bot.send_message(
+                LOG_CHANNEL_ID,
+                f"📢 {update.effective_user.first_name} requested the main channel"
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to log to group (mainchannel command): {str(e)}")
 
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
-    try:
-        message = await update.message.reply_text(LANGUAGES[lang]['guide'])
-        logger.info(f"User {user_id} used /guide command")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    chat_id = update.effective_chat.id
 
-        # Log to group with error handling
-        if IS_LOGGING_ENABLED:
-            try:
-                await context.bot.send_message(LOG_CHANNEL_ID, f"📚 {update.effective_user.first_name} viewed the usage guide")
-            except TelegramError as e:
-                logger.error(f"Failed to log to group (guide command): {str(e)}")
-    except TelegramError as e:
-        logger.error(f"Error in guide command: {str(e)}")
-        message = await update.message.reply_text("An error occurred. Please try again later.")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    await send_message_with_auto_delete(
+        context,
+        chat_id,
+        LANGUAGES[lang]['guide']
+    )
+    logger.info(f"User {user_id} used /guide command")
+
+    # Log to group
+    if IS_LOGGING_ENABLED:
+        try:
+            await context.bot.send_message(
+                LOG_CHANNEL_ID,
+                f"📚 {update.effective_user.first_name} viewed the usage guide"
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to log to group (guide command): {str(e)}")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     lang = user_states[user_id]['language']
-    try:
-        if user_id not in ADMIN_USER_IDS:
-            message = await update.message.reply_text(LANGUAGES[lang]['not_allowed'])
-            logger.info(f"User {user_id} attempted /broadcast but is not an admin")
-            asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    chat_id = update.effective_chat.id
 
-            # Log to group with error handling
-            if IS_LOGGING_ENABLED:
-                try:
-                    await context.bot.send_message(LOG_CHANNEL_ID, f"🚫 {update.effective_user.first_name} attempted to broadcast but is not an admin")
-                except TelegramError as e:
-                    logger.error(f"Failed to log to group (broadcast permission denied): {str(e)}")
-            return
+    if user_id not in ADMIN_USER_IDS:
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['not_allowed']
+        )
+        logger.info(f"User {user_id} attempted /broadcast but is not an admin")
 
-        message = await update.message.reply_text(LANGUAGES[lang]['broadcast'])
-        logger.info(f"User {user_id} used /broadcast command")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
-
-        # Log to group with error handling
+        # Log to group
         if IS_LOGGING_ENABLED:
             try:
-                await context.bot.send_message(LOG_CHANNEL_ID, f"📢 {update.effective_user.first_name} initiated a broadcast: New season links available!")
+                await context.bot.send_message(
+                    LOG_CHANNEL_ID,
+                    f"🚫 {update.effective_user.first_name} attempted to broadcast but is not an admin"
+                )
             except TelegramError as e:
-                logger.error(f"Failed to log to group (broadcast command): {str(e)}")
-    except TelegramError as e:
-        logger.error(f"Error in broadcast command: {str(e)}")
-        message = await update.message.reply_text("An error occurred. Please try again later.")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+                logger.error(f"Failed to log to group (broadcast permission denied): {str(e)}")
+        return
+
+    await send_message_with_auto_delete(
+        context,
+        chat_id,
+        LANGUAGES[lang]['broadcast']
+    )
+    logger.info(f"User {user_id} used /broadcast command")
+
+    # Log to group
+    if IS_LOGGING_ENABLED:
+        try:
+            await context.bot.send_message(
+                LOG_CHANNEL_ID,
+                f"📢 {update.effective_user.first_name} initiated a broadcast: New season links available!"
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to log to group (broadcast command): {str(e)}")
 
 async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
     text = update.message.text.lower()
 
-    try:
-        if text.startswith('season '):
-            try:
-                season_number = int(text.split(' ')[1])
-                if 1 <= season_number <= 10:
-                    await send_season_info(update, context, f"season_{season_number}")
-                    user_states[user_id]['last_action'] = f"season_{season_number}"
-                else:
-                    message = await update.message.reply_text(LANGUAGES[lang]['invalid_season'])
-                    asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
-            except ValueError:
-                message = await update.message.reply_text(LANGUAGES[lang]['invalid_season'])
-                asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
-        elif text == 'help':
-            message = await update.message.reply_text(LANGUAGES[lang]['help'])
-            logger.info(f"User {user_id} used /help command")
-            asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    if text.startswith('season '):
+        try:
+            season_number = int(text.split(' ')[1])
+            if 1 <= season_number <= 10:
+                await send_season_info(update, context, f"season_{season_number}")
+                user_states[user_id]['last_action'] = f"season_{season_number}"
+            else:
+                await send_message_with_auto_delete(
+                    context,
+                    chat_id,
+                    LANGUAGES[lang]['invalid_season']
+                )
+        except ValueError:
+            await send_message_with_auto_delete(
+                context,
+                chat_id,
+                LANGUAGES[lang]['invalid_season']
+            )
+    elif text == 'help':
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['help']
+        )
+        logger.info(f"User {user_id} used /help command")
 
-            # Log to group with error handling
-            if IS_LOGGING_ENABLED:
-                try:
-                    await context.bot.send_message(LOG_CHANNEL_ID, f"ℹ️ {update.effective_user.first_name} used /help")
-                except TelegramError as e:
-                    logger.error(f"Failed to log to group (help command): {str(e)}")
-        elif text == 'settings':
-            message = await update.message.reply_text(LANGUAGES[lang]['settings'])
-            asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
-        else:
-            message = await update.message.reply_text("Invalid selection.")
-            asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
-    except TelegramError as e:
-        logger.error(f"Error handling selection: {str(e)}")
-        message = await update.message.reply_text("An error occurred. Please try again later.")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+        # Log to group
+        if IS_LOGGING_ENABLED:
+            try:
+                await context.bot.send_message(
+                    LOG_CHANNEL_ID,
+                    f"ℹ️ {update.effective_user.first_name} used /help"
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (help command): {str(e)}")
+    elif text == 'settings':
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['settings']
+        )
+    else:
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            "Invalid selection."
+        )
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -519,6 +606,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
 
     try:
         if query.data.startswith('info_'):
@@ -530,33 +618,41 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if season_info:
                 current_time = time.time()
                 user_states[user_id]['season_access'][season_key]['resolved_time'] = current_time
-                # Dynamically shorten the start_id_ref URL using gplinks.co API
                 long_url = season_info["start_id_ref"]
                 short_url = await shorten_url(long_url, season_key)
                 season_name = f"Season {season_key.split('_')[1]}"
-                message = await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=f"{season_name} Link: {short_url}"
+                keyboard = [
+                    [InlineKeyboardButton("How to Resolve", url="https://t.me/+_SQNyZD8hns3NzY1")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await send_message_with_auto_delete(
+                    context,
+                    chat_id,
+                    f"{season_name} Link: {short_url}",
+                    reply_markup=reply_markup
                 )
-                asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-                # Log to group with error handling
+                # Log to group
                 if IS_LOGGING_ENABLED:
                     try:
-                        await context.bot.send_message(LOG_CHANNEL_ID, f"🔗 {update.effective_user.first_name} resolved link for {season_name}")
+                        await context.bot.send_message(
+                            LOG_CHANNEL_ID,
+                            f"🔗 {update.effective_user.first_name} resolved link for {season_name}"
+                        )
                     except TelegramError as e:
                         logger.error(f"Failed to log to group (resolve link): {str(e)}")
     except TelegramError as e:
         logger.error(f"Error handling button callback: {str(e)}")
-        message = await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="An error occurred. Please try again later."
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            "An error occurred. Please try again later."
         )
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
 async def set_command_menu(application):
     commands = [
         BotCommand(command="start", description="Start the bot and see the menu"),
+        BotCommand(command="episode", description="Get a specific episode link (e.g., /episode 100)"),
         BotCommand(command="clearhistory", description="Remove history"),
         BotCommand(command="owner", description="Show owner info"),
         BotCommand(command="mainchannel", description="Join our main channel"),
@@ -610,6 +706,7 @@ async def main():
 
         # Add handlers
         app.add_handler(CommandHandler('start', start))
+        app.add_handler(CommandHandler('episode', episode))
         app.add_handler(CommandHandler('clearhistory', clearhistory))
         app.add_handler(CommandHandler('owner', owner))
         app.add_handler(CommandHandler('mainchannel', mainchannel))
