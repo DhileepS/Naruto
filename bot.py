@@ -118,7 +118,7 @@ season_data = {
         }
     },
     "season_2": {
-        "link": "https://example.com/season2/link",
+        "link": "https://gplinks.co/2jdg",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season2",
         "episodes": {
             "Episode 1": "https://example.com/season2/episode1",
