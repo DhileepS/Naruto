@@ -110,7 +110,7 @@ LANGUAGES = {
 # Season data (Naruto seasons with placeholder links)
 season_data = {
     "season_1": {
-        "link": "https://example.com/season1/link",
+        "link": "https://gplinks.co/2jdg",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season1",
         "episodes": {
             "Episode 1": "https://example.com/season1/episode1",
