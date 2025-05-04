@@ -289,25 +289,43 @@ async def send_season_info(update: Update, context: ContextTypes.DEFAULT_TYPE, s
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
+
+    # Check if the /start command has a parameter (e.g., /start season1)
+    start_param = context.args[0] if context.args else None
+
     try:
-        keyboard = [
-            ['Season 1'],
-            ['Season 2'],
-            ['Season 3'],
-            ['Season 4'],
-            ['Season 5'],
-            ['Season 6'],
-            ['Season 7'],
-            ['Season 8'],
-            ['Season 9'],
-            ['Season 10'],
-            ['Help'],
-            ['Settings']
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-        message = await update.message.reply_text(LANGUAGES[lang]['welcome'], reply_markup=reply_markup)
-        logger.info(f"User {user_id} used /start command")
-        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+        # If a start parameter is provided (e.g., season1, season2, etc.)
+        if start_param and start_param.startswith('season'):
+            season_key = f"season_{start_param.split('season')[1]}"
+            # Validate season_key exists in season_data
+            if season_key in season_data:
+                await send_season_info(update, context, season_key)
+                logger.info(f"User {user_id} used /start with parameter {start_param}")
+            else:
+                message = await update.message.reply_text(LANGUAGES[lang]['season_not_found'])
+                asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+                logger.info(f"User {user_id} used /start with invalid parameter {start_param}")
+        else:
+            # Default behavior: Show the season selection menu
+            keyboard = [
+                ['Season 1'],
+                ['Season 2'],
+                ['Season 3'],
+                ['Season 4'],
+                ['Season 5'],
+                ['Season 6'],
+                ['Season 7'],
+                ['Season 8'],
+                ['Season 9'],
+                ['Season 10'],
+                ['Help'],
+                ['Settings']
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+            message = await update.message.reply_text(LANGUAGES[lang]['welcome'], reply_markup=reply_markup)
+            logger.info(f"User {user_id} used /start command")
+
+            asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
         # Log to group with error handling
         if IS_LOGGING_ENABLED:
