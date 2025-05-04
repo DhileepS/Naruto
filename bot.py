@@ -91,7 +91,11 @@ user_states = defaultdict(lambda: {
     'last_action': None,
     'last_season': None,
     'season_access': {},
+    'broadcast': {},  # Temporary storage for broadcast creation
 })
+
+# Set to store all user IDs who have interacted with the bot
+all_users = set()
 
 # Auto-delete duration (1 hour in seconds)
 AUTO_DELETE_DURATION = 60 * 60
@@ -112,7 +116,12 @@ LANGUAGES = {
         'owner': 'Owner: @Dhileep_S 👨‍💼',
         'mainchannel': 'Join our main channel: @bot_paiyan_official 📢',
         'guide': '✨ **Usage Guide** ✨\n1. 🌟 Click /start to see the season menu.\n2. 🎬 Select a season (e.g., Season 1).\n3. 🔗 Click "Link-Shortner" to get the season link.\n4. 📺 Use /episode <number> to get a specific episode (e.g., /episode 100).\n5. ✅ Resolve the link to access your file.\n6. ℹ️ Use /help for more commands!',
-        'broadcast': 'Broadcast message sent (logged to group). 📢',
+        'broadcast_start': 'Let’s create a broadcast message. Please send the text or image for the post.',
+        'broadcast_add_button': 'Would you like to add a button to your post? Reply with "+" to add a button, or choose an action below.',
+        'broadcast_button_text': 'Please enter the text for the button.',
+        'broadcast_button_link': 'Please enter the link for the button (e.g., https://example.com).',
+        'broadcast_options': 'What would you like to do next?',
+        'broadcast_sent': 'Broadcast message sent to all users! 📢',
         'not_allowed': 'You are not allowed to use this command. 🚫 Only admins can broadcast.'
     }
 }
@@ -156,6 +165,15 @@ def create_link_keyboard():
         [InlineKeyboardButton("How to Resolve", url="https://t.me/+_SQNyZD8hns3NzY1")],
         [InlineKeyboardButton("CE Sub", url="https://t.me/ce_sub_placeholder")],  # Replace with actual URL
         [InlineKeyboardButton("Try Again", url="https://t.me/bot_paiyan_official")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# Helper function to create the broadcast options keyboard
+def create_broadcast_options_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("Preview", callback_data="broadcast_preview")],
+        [InlineKeyboardButton("Send to All Users", callback_data="broadcast_send")],
+        [InlineKeyboardButton("Continue", callback_data="broadcast_continue")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -239,6 +257,9 @@ async def episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
 
+    # Add user to all_users set
+    all_users.add(user_id)
+
     # Check if an episode number was provided
     if not context.args:
         await send_message_with_auto_delete(
@@ -313,6 +334,9 @@ async def send_season_info(update: Update, context: ContextTypes.DEFAULT_TYPE, s
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
 
+    # Add user to all_users set
+    all_users.add(user_id)
+
     season_info = season_data.get(season_key)
     if not season_info:
         await send_message_with_auto_delete(
@@ -365,6 +389,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
+
+    # Add user to all_users set
+    all_users.add(user_id)
 
     # Check if the /start command has a parameter (e.g., /start season1)
     start_param = context.args[0] if context.args else None
@@ -422,11 +449,15 @@ async def clearhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
 
+    # Add user to all_users set
+    all_users.add(user_id)
+
     user_states[user_id] = {
         'language': 'en',
         'last_action': None,
         'last_season': None,
         'season_access': {},
+        'broadcast': {}
     }
     await send_message_with_auto_delete(
         context,
@@ -450,6 +481,9 @@ async def owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
 
+    # Add user to all_users set
+    all_users.add(user_id)
+
     await send_message_with_auto_delete(
         context,
         chat_id,
@@ -471,6 +505,9 @@ async def mainchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
+
+    # Add user to all_users set
+    all_users.add(user_id)
 
     await send_message_with_auto_delete(
         context,
@@ -494,6 +531,9 @@ async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
 
+    # Add user to all_users set
+    all_users.add(user_id)
+
     await send_message_with_auto_delete(
         context,
         chat_id,
@@ -511,11 +551,16 @@ async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except TelegramError as e:
             logger.error(f"Failed to log to group (guide command): {str(e)}")
 
+# Broadcast command handler
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
 
+    # Add user to all_users set
+    all_users.add(user_id)
+
+    # Check if the user is an admin
     if user_id not in ADMIN_USER_IDS:
         await send_message_with_auto_delete(
             context,
@@ -535,28 +580,196 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Failed to log to group (broadcast permission denied): {str(e)}")
         return
 
+    # Initialize broadcast state
+    user_states[user_id]['broadcast'] = {
+        'stage': 'content',
+        'content': None,
+        'is_image': False,
+        'buttons': []
+    }
+
+    # Prompt for broadcast content
     await send_message_with_auto_delete(
         context,
         chat_id,
-        LANGUAGES[lang]['broadcast']
+        LANGUAGES[lang]['broadcast_start']
     )
-    logger.info(f"User {user_id} used /broadcast command")
+    logger.info(f"User {user_id} started broadcast creation")
 
-    # Log to group
-    if IS_LOGGING_ENABLED:
-        try:
-            await context.bot.send_message(
-                LOG_CHANNEL_ID,
-                f"📢 {update.effective_user.first_name} initiated a broadcast: New season links available!"
+# Handler for broadcast creation steps
+async def handle_broadcast_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
+
+    # Add user to all_users set
+    all_users.add(user_id)
+
+    broadcast_state = user_states[user_id].get('broadcast', {})
+    if not broadcast_state:
+        return  # Not in broadcast creation mode
+
+    stage = broadcast_state.get('stage')
+
+    if stage == 'content':
+        # Handle text or image content
+        if update.message.text:
+            broadcast_state['content'] = update.message.text
+            broadcast_state['is_image'] = False
+        elif update.message.photo:
+            broadcast_state['content'] = update.message.photo[-1].file_id  # Get the highest quality photo
+            broadcast_state['is_image'] = True
+        else:
+            await send_message_with_auto_delete(
+                context,
+                chat_id,
+                "Please send text or an image for the broadcast."
             )
-        except TelegramError as e:
-            logger.error(f"Failed to log to group (broadcast command): {str(e)}")
+            return
+
+        # Move to button stage
+        broadcast_state['stage'] = 'add_button'
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['broadcast_add_button'],
+            reply_markup=create_broadcast_options_keyboard()
+        )
+
+    elif stage == 'button_text':
+        # Store the button text
+        broadcast_state['current_button'] = {'text': update.message.text}
+        broadcast_state['stage'] = 'button_link'
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['broadcast_button_link']
+        )
+
+    elif stage == 'button_link':
+        # Store the button link
+        button = broadcast_state.get('current_button', {})
+        button['url'] = update.message.text
+        broadcast_state['buttons'].append([InlineKeyboardButton(button['text'], url=button['url'])])
+        del broadcast_state['current_button']
+        broadcast_state['stage'] = 'add_button'
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['broadcast_add_button'],
+            reply_markup=create_broadcast_options_keyboard()
+        )
+
+# Handler for broadcast options (Preview, Send, Continue)
+async def broadcast_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = str(update.effective_user.id)
+    lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
+
+    broadcast_state = user_states[user_id].get('broadcast', {})
+    if not broadcast_state:
+        return
+
+    action = query.data
+
+    # Prepare the post
+    content = broadcast_state.get('content')
+    is_image = broadcast_state.get('is_image', False)
+    buttons = broadcast_state.get('buttons', [])
+    reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
+
+    if action == 'broadcast_preview':
+        # Show preview
+        if is_image:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=content,
+                reply_markup=reply_markup
+            )
+        else:
+            await send_message_with_auto_delete(
+                context,
+                chat_id,
+                content,
+                reply_markup=reply_markup
+            )
+        # Show options again
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['broadcast_options'],
+            reply_markup=create_broadcast_options_keyboard()
+        )
+
+    elif action == 'broadcast_send':
+        # Send to all users
+        for target_user_id in all_users:
+            try:
+                if is_image:
+                    await context.bot.send_photo(
+                        chat_id=target_user_id,
+                        photo=content,
+                        reply_markup=reply_markup
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=content,
+                        reply_markup=reply_markup
+                    )
+            except TelegramError as e:
+                logger.error(f"Failed to send broadcast to user {target_user_id}: {str(e)}")
+
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['broadcast_sent']
+        )
+
+        # Log to group
+        if IS_LOGGING_ENABLED:
+            try:
+                await context.bot.send_message(
+                    LOG_CHANNEL_ID,
+                    f"📢 {update.effective_user.first_name} sent a broadcast to {len(all_users)} users"
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (broadcast sent): {str(e)}")
+
+        # Clear broadcast state
+        user_states[user_id]['broadcast'] = {}
+
+    elif action == 'broadcast_continue':
+        # Continue adding buttons
+        broadcast_state['stage'] = 'button_text'
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['broadcast_button_text']
+        )
 
 async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
     text = update.message.text.lower()
+
+    # Add user to all_users set
+    all_users.add(user_id)
+
+    # Check if in broadcast creation mode and handle button addition
+    broadcast_state = user_states[user_id].get('broadcast', {})
+    if broadcast_state and broadcast_state.get('stage') == 'add_button' and text == '+':
+        broadcast_state['stage'] = 'button_text'
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['broadcast_button_text']
+        )
+        return
 
     if text.startswith('season '):
         try:
@@ -614,6 +827,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
 
+    # Add user to all_users set
+    all_users.add(user_id)
+
     try:
         if query.data.startswith('info_'):
             season_key = query.data.split('_', 1)[1]
@@ -644,6 +860,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except TelegramError as e:
                         logger.error(f"Failed to log to group (resolve link): {str(e)}")
+        elif query.data.startswith('broadcast_'):
+            await broadcast_options(update, context)
     except TelegramError as e:
         logger.error(f"Error handling button callback: {str(e)}")
         await send_message_with_auto_delete(
@@ -717,6 +935,7 @@ async def main():
         app.add_handler(CommandHandler('broadcast', broadcast))
         app.add_handler(CommandHandler('getchatid', get_chat_id))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selection))
+        app.add_handler(MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, handle_broadcast_creation))
         app.add_handler(CallbackQueryHandler(button))
 
         # Set command menu
