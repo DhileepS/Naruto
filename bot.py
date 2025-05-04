@@ -1,6 +1,5 @@
 import logging
 import asyncio
-import signal
 import sys
 from telegram import Bot, ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
@@ -467,7 +466,7 @@ async def set_command_menu(application):
     except TelegramError as e:
         logger.error(f"Failed to set command menu: {str(e)}")
 
-async def main():
+def main():
     try:
         if 'YOUR_BOT_TOKEN' in BOT_TOKEN:
             print("Invalid bot token. Please set a valid token.")
@@ -493,21 +492,22 @@ async def main():
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selection))
         app.add_handler(CallbackQueryHandler(button))
 
-        # Set command menu
-        await set_command_menu(app)
+        # Set command menu and get the event loop
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(set_command_menu(app))
 
-        # Now that the event loop is running, set it in the handler
-        telegram_handler.set_loop(asyncio.get_event_loop())
+        # Set the loop in the logging handler
+        telegram_handler.set_loop(loop)
 
         # Log that the bot is starting
+        print("Starting bot...")
         logger.info("Starting bot...")
 
         # Start polling
-        await app.run_polling()
+        app.run_polling()
     except Exception as e:
         logger.error(f"Failed to start bot: {str(e)}")
         raise
 
 if __name__ == '__main__':
-    # Run the main function in an event loop
-    asyncio.run(main())
+    main()
