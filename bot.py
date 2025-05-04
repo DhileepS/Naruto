@@ -32,9 +32,30 @@ log_bot = Bot(token=BOT_TOKEN)
 
 # Custom logging handler to send logs to Telegram group
 class TelegramGroupHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.log_queue = []  # Queue to store logs until the event loop is running
+        self.loop = None
+        self.bot_initialized = False
+
+    def set_loop(self, loop):
+        self.loop = loop
+        self.bot_initialized = True
+        # Process any queued logs now that the loop is set
+        if self.log_queue:
+            for log_entry in self.log_queue:
+                asyncio.run_coroutine_threadsafe(self.send_log_to_group(log_entry), self.loop)
+            self.log_queue.clear()
+
     def emit(self, record):
         log_entry = self.format(record)
-        asyncio.create_task(self.send_log_to_group(log_entry))
+        if not self.bot_initialized or self.loop is None:
+            # If the loop isn't set, queue the log message
+            self.log_queue.append(log_entry)
+            print(f"Queued log: {log_entry}")  # Fallback to console
+        else:
+            # If the loop is set, send the log to Telegram
+            asyncio.run_coroutine_threadsafe(self.send_log_to_group(log_entry), self.loop)
 
     async def send_log_to_group(self, log_entry):
         try:
@@ -431,11 +452,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-def handle_shutdown(application):
-    logger.info("Shutting down bot...")
-    application.stop_running()
-    logger.info("Bot stopped.")
-
 async def set_command_menu(application):
     commands = [
         BotCommand(command="start", description="Start the bot and see the menu"),
@@ -451,18 +467,18 @@ async def set_command_menu(application):
     except TelegramError as e:
         logger.error(f"Failed to set command menu: {str(e)}")
 
-def main():
+async def main():
     try:
         if 'YOUR_BOT_TOKEN' in BOT_TOKEN:
-            logger.critical("Invalid bot token. Please set a valid token.")
+            print("Invalid bot token. Please set a valid token.")
             sys.exit(1)
 
         if LOG_CHANNEL_ID == 0:
-            logger.critical("Invalid log group ID. Please set a valid group ID.")
+            print("Invalid log group ID. Please set a valid group ID.")
             sys.exit(1)
 
         if not ADMIN_USER_IDS or ADMIN_USER_IDS == ['']:
-            logger.critical("Invalid admin user ID. Please set a valid admin ID.")
+            print("Invalid admin user ID. Please set a valid admin ID.")
             sys.exit(1)
 
         app = Application.builder().token(BOT_TOKEN).build()
@@ -477,19 +493,21 @@ def main():
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selection))
         app.add_handler(CallbackQueryHandler(button))
 
-        # Set up signal handlers for graceful shutdown
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            signal.signal(sig, lambda s, f: handle_shutdown(app))
-
         # Set command menu
-        loop = asyncio.get_event_loop()
-        loop.create_task(set_command_menu(app))
+        await set_command_menu(app)
 
+        # Now that the event loop is running, set it in the handler
+        telegram_handler.set_loop(asyncio.get_event_loop())
+
+        # Log that the bot is starting
         logger.info("Starting bot...")
-        loop.run_until_complete(app.run_polling())
+
+        # Start polling
+        await app.run_polling()
     except Exception as e:
-        logger.critical(f"Failed to start bot: {str(e)}")
+        logger.error(f"Failed to start bot: {str(e)}")
         raise
 
 if __name__ == '__main__':
-    main()
+    # Run the main function in an event loop
+    asyncio.run(main())
