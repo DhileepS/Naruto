@@ -16,10 +16,13 @@ from telegram.error import TelegramError
 from collections import defaultdict
 import time
 from aiohttp import web, ClientSession
+import math
 
 # Environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
 LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID', '0')  # Default to '0' if not set
+DB_CHANNEL_1 = os.getenv('DB_CHANNEL_1', '0')  # First database channel
+DB_CHANNEL_2 = os.getenv('DB_CHANNEL_2', '0')  # Second database channel
 ADMIN_USER_IDS = os.getenv('ADMIN_USER_IDS', '').split(',')  # Default to empty list if not set
 GPLINK_API = os.getenv('GPLINK_API', 'YOUR_GPLINK_API')  # gplinks.co API token
 PORT = int(os.getenv('PORT', 10000))  # Render assigns PORT, default to 10000
@@ -33,8 +36,29 @@ except ValueError:
 # Validate LOG_CHANNEL_ID (should be negative for groups)
 IS_LOGGING_ENABLED = LOG_CHANNEL_ID != 0 and LOG_CHANNEL_ID < 0
 
+# Convert DB_CHANNEL_1 to int and validate
+try:
+    DB_CHANNEL_1 = int(DB_CHANNEL_1)
+except ValueError:
+    DB_CHANNEL_1 = 0
+
+# Convert DB_CHANNEL_2 to int and validate
+try:
+    DB_CHANNEL_2 = int(DB_CHANNEL_2)
+except ValueError:
+    DB_CHANNEL_2 = 0
+
+# Validate DB channels (should be negative for channels)
+IS_DB_ENABLED = (DB_CHANNEL_1 != 0 and DB_CHANNEL_1 < 0) or (DB_CHANNEL_2 != 0 and DB_CHANNEL_2 < 0)
+
 # Initialize a Bot instance for sending logs to the group
 log_bot = Bot(token=BOT_TOKEN)
+
+# Global variable to store cover photo file ID
+COVER_PHOTO_ID = None
+
+# Maximum files per page for pagination
+FILES_PER_PAGE = 10
 
 # Custom logging handler to send logs to Telegram group
 class TelegramGroupHandler(logging.Handler):
@@ -92,6 +116,9 @@ user_states = defaultdict(lambda: {
     'last_season': None,
     'season_access': {},
     'broadcast': {},  # Temporary storage for broadcast creation
+    'search_results': [],  # Store search results for pagination
+    'search_page': 1,  # Current page for search results
+    'search_query': None,  # Store the last search query
 })
 
 # Set to store all user IDs who have interacted with the bot
@@ -115,14 +142,23 @@ LANGUAGES = {
         'clearhistory': 'Your history has been cleared! 🗑️',
         'owner': 'Owner: @Dhileep_S 👨‍💼',
         'mainchannel': 'Join our main channel: @bot_paiyan_official 📢',
-        'guide': '✨ **Usage Guide** ✨\n1. 🌟 Click /start to see the season menu.\n2. 🎬 Select a season (e.g., Season 1).\n3. 🔗 Click "Link-Shortner" to get the season link.\n4. 📺 Use /episode <number> to get a specific episode (e.g., /episode 100).\n5. ✅ Resolve the link to access your file.\n6. ℹ️ Use /help for more commands!',
+        'guide': '✨ **Usage Guide** ✨\n1. 🌟 Click /start to see the season menu.\n2. 🎬 Select a season (e.g., Season 1).\n3. 🔗 Click "Link-Shortner" to get the season link.\n4. 📺 Use /episode <number> to get a specific episode (e.g., /episode 100).\n5. ✅ Resolve the link to access your file.\n6. ℹ️ Use /help for more commands!\n7. 🔍 Type any text to search for files (e.g., "naruto" to find all Naruto files).',
         'broadcast_start': 'Let’s create a broadcast message. Please send the text or image for the post.',
         'broadcast_add_button': 'Would you like to add a button to your post? Reply with "+" to add a button, or choose an action below.',
         'broadcast_button_text': 'Please enter the text for the button.',
         'broadcast_button_link': 'Please enter the link for the button (e.g., https://example.com).',
         'broadcast_options': 'What would you like to do next?',
         'broadcast_sent': 'Broadcast message sent to all users! 📢',
-        'not_allowed': 'You are not allowed to use this command. 🚫 Only admins can broadcast.'
+        'not_allowed': 'You are not allowed to use this command. 🚫 Only admins can use this.',
+        'file_not_found': 'No files found for your search: {query}. Try a different keyword.',
+        'file_search_error': 'Error searching for files. Please try again later.',
+        'file_sent': 'File found: {file_name}\nLink: {short_url}',
+        'multiple_files_found': 'Found {count} files matching "{query}":\n\n{file_list}\n\nUse the buttons to navigate pages or refine your search for more specific results.',
+        'page_indicator': 'Page {current}/{total}',
+        'db_not_configured': 'File search is not enabled. Please contact the bot owner.',
+        'cover_set': 'Cover photo updated successfully! 📷',
+        'cover_prompt': 'Please send the photo to set as the cover.',
+        'cover_invalid': 'Please send a valid photo.'
     }
 }
 
@@ -175,6 +211,20 @@ def create_broadcast_options_keyboard():
         [InlineKeyboardButton("Send to All Users", callback_data="broadcast_send")],
         [InlineKeyboardButton("Continue", callback_data="broadcast_continue")]
     ]
+    return InlineKeyboardMarkup(keyboard)
+
+# Helper function to create pagination keyboard
+def create_pagination_keyboard(current_page: int, total_pages: int):
+    keyboard = []
+    if total_pages > 1:
+        buttons = []
+        if current_page > 1:
+            buttons.append(InlineKeyboardButton("Previous Page", callback_data="prev_page"))
+        if current_page < total_pages:
+            buttons.append(InlineKeyboardButton("Next Page", callback_data="next_page"))
+        if buttons:
+            keyboard.append(buttons)
+        keyboard.append([InlineKeyboardButton(f"Page {current_page}/{total_pages}", callback_data="noop")])
     return InlineKeyboardMarkup(keyboard)
 
 # Helper function to send messages and schedule deletion
@@ -240,6 +290,42 @@ def find_episode(episode_number: int):
             season_num = int(season_key.split('_')[1])
             return season_key, season_num, episodes[episode_number]
     return None, None, None
+
+# Function to search for files in the database channels
+async def search_file_in_channel(context: ContextTypes.DEFAULT_TYPE, query: str) -> list:
+    """
+    Search for files in DB_CHANNEL_1 and DB_CHANNEL_2 that match the query.
+    Returns a list of dicts with file_id and file_name for all matching files.
+    """
+    matching_files = []
+    channels = [DB_CHANNEL_1, DB_CHANNEL_2] if IS_DB_ENABLED else []
+    for channel_id in channels:
+        if channel_id == 0 or channel_id >= 0:
+            continue
+        try:
+            # Fetch up to 500 recent messages from the channel
+            async for message in context.bot.get_chat_history(chat_id=channel_id, limit=500):
+                if message.document or message.video or message.audio or message.photo:
+                    file_name = None
+                    if message.document:
+                        file_name = message.document.file_name
+                    elif message.video:
+                        file_name = message.caption or "video_file"
+                    elif message.audio:
+                        file_name = message.audio.file_name or "audio_file"
+                    elif message.photo:
+                        file_name = message.caption or "photo_file"
+
+                    # Check if the query matches the file name or caption
+                    if file_name and query.lower() in file_name.lower():
+                        file_id = (message.document.file_id if message.document else
+                                  message.video.file_id if message.video else
+                                  message.audio.file_id if message.audio else
+                                  message.photo[-1].file_id)
+                        matching_files.append({'file_id': file_id, 'file_name': file_name})
+        except TelegramError as e:
+            logger.error(f"Error searching channel {channel_id}: {str(e)}")
+    return matching_files
 
 # Debug command to get the chat ID
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -329,6 +415,79 @@ async def episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "An error occurred. Please try again later."
         )
 
+# Handler for setting cover photo
+async def cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
+
+    # Add user to all_users set
+    all_users.add(user_id)
+
+    # Check if the user is an admin
+    if user_id not in ADMIN_USER_IDS:
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['not_allowed']
+        )
+        logger.info(f"User {user_id} attempted /cover but is not an admin")
+        if IS_LOGGING_ENABLED:
+            try:
+                await context.bot.send_message(
+                    LOG_CHANNEL_ID,
+                    f"🚫 {update.effective_user.first_name} attempted /cover but is not an admin"
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (cover permission denied): {str(e)}")
+        return
+
+    # Prompt for photo
+    user_states[user_id]['awaiting_cover'] = True
+    await send_message_with_auto_delete(
+        context,
+        chat_id,
+        LANGUAGES[lang]['cover_prompt']
+    )
+    logger.info(f"User {user_id} initiated /cover command")
+
+async def handle_cover_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
+
+    # Check if awaiting cover photo
+    if not user_states[user_id].get('awaiting_cover', False):
+        return
+
+    # Handle photo
+    if update.message.photo:
+        global COVER_PHOTO_ID
+        COVER_PHOTO_ID = update.message.photo[-1].file_id  # Get the highest quality photo
+        user_states[user_id]['awaiting_cover'] = False
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['cover_set']
+        )
+        logger.info(f"User {user_id} set new cover photo: {COVER_PHOTO_ID}")
+
+        # Log to group
+        if IS_LOGGING_ENABLED:
+            try:
+                await context.bot.send_message(
+                    LOG_CHANNEL_ID,
+                    f"📷 {update.effective_user.first_name} updated the cover photo"
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (cover set): {str(e)}")
+    else:
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['cover_invalid']
+        )
+
 async def send_season_info(update: Update, context: ContextTypes.DEFAULT_TYPE, season_key: str):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
@@ -393,22 +552,57 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Add user to all_users set
     all_users.add(user_id)
 
-    # Check if the /start command has a parameter (e.g., /start season1)
+    # Check if the /start command has a parameter
     start_param = context.args[0] if context.args else None
 
-    # If a start parameter is provided (e.g., season1, season2, etc.)
-    if start_param and start_param.startswith('season'):
-        season_key = f"season_{start_param.split('season')[1]}"
-        if season_key in season_data:
-            await send_season_info(update, context, season_key)
-            logger.info(f"User {user_id} used /start with parameter {start_param}")
-        else:
-            await send_message_with_auto_delete(
-                context,
-                chat_id,
-                LANGUAGES[lang]['season_not_found']
-            )
-            logger.info(f"User {user_id} used /start with invalid parameter {start_param}")
+    if start_param:
+        if start_param.startswith('season'):
+            season_key = f"season_{start_param.split('season')[1]}"
+            if season_key in season_data:
+                await send_season_info(update, context, season_key)
+                logger.info(f"User {user_id} used /start with parameter {start_param}")
+            else:
+                await send_message_with_auto_delete(
+                    context,
+                    chat_id,
+                    LANGUAGES[lang]['season_not_found']
+                )
+                logger.info(f"User {user_id} used /start with invalid parameter {start_param}")
+        elif start_param.startswith('file_'):
+            file_id = start_param.split('file_')[1]
+            try:
+                # Send cover photo if set
+                if COVER_PHOTO_ID:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=COVER_PHOTO_ID,
+                        caption="Cover Photo"
+                    )
+                # Send the file
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=file_id,
+                    reply_markup=create_link_keyboard()
+                )
+                logger.info(f"User {user_id} accessed file with ID {file_id}")
+
+                # Log to group
+                if IS_LOGGING_ENABLED:
+                    try:
+                        await context.bot.send_message(
+                            LOG_CHANNEL_ID,
+                            f"📎 {update.effective_user.first_name} accessed file via start link"
+                        )
+                    except TelegramError as e:
+                        logger.error(f"Failed to log to group (file access): {str(e)}")
+            except TelegramError as e:
+                logger.error(f"Error sending file {file_id}: {str(e)}")
+                await send_message_with_auto_delete(
+                    context,
+                    chat_id,
+                    "Failed to send the file. It may have been deleted or is invalid."
+                )
+            return
     else:
         # Default behavior: Show the season selection menu
         keyboard = [
@@ -457,7 +651,10 @@ async def clearhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'last_action': None,
         'last_season': None,
         'season_access': {},
-        'broadcast': {}
+        'broadcast': {},
+        'search_results': [],
+        'search_page': 1,
+        'search_query': None
     }
     await send_message_with_auto_delete(
         context,
@@ -568,8 +765,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             LANGUAGES[lang]['not_allowed']
         )
         logger.info(f"User {user_id} attempted /broadcast but is not an admin")
-
-        # Log to group
         if IS_LOGGING_ENABLED:
             try:
                 await context.bot.send_message(
@@ -755,7 +950,7 @@ async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
     chat_id = update.effective_chat.id
-    text = update.message.text.lower()
+    text = update.message.text.lower().strip()
 
     # Add user to all_users set
     all_users.add(user_id)
@@ -771,6 +966,7 @@ async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Handle season selection
     if text.startswith('season '):
         try:
             season_number = int(text.split(' ')[1])
@@ -789,15 +985,16 @@ async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id,
                 LANGUAGES[lang]['invalid_season']
             )
-    elif text == 'help':
+        return
+
+    # Handle help and settings
+    if text == 'help':
         await send_message_with_auto_delete(
             context,
             chat_id,
             LANGUAGES[lang]['help']
         )
         logger.info(f"User {user_id} used /help command")
-
-        # Log to group
         if IS_LOGGING_ENABLED:
             try:
                 await context.bot.send_message(
@@ -806,18 +1003,104 @@ async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except TelegramError as e:
                 logger.error(f"Failed to log to group (help command): {str(e)}")
+        return
     elif text == 'settings':
         await send_message_with_auto_delete(
             context,
             chat_id,
             LANGUAGES[lang]['settings']
         )
-    else:
+        return
+
+    # Treat any other text as a search query
+    if not IS_DB_ENABLED:
         await send_message_with_auto_delete(
             context,
             chat_id,
-            "Invalid selection."
+            LANGUAGES[lang]['db_not_configured']
         )
+        logger.error("DB_CHANNEL_1 or DB_CHANNEL_2 is not configured properly")
+        return
+
+    # Search for files in DB_CHANNEL_1 and DB_CHANNEL_2
+    file_infos = await search_file_in_channel(context, text)
+    if not file_infos:
+        await send_message_with_auto_delete(
+            context,
+            chat_id,
+            LANGUAGES[lang]['file_not_found'].format(query=text)
+        )
+        logger.info(f"No files found for query '{text}' by user {user_id}")
+        return
+
+    # Store search results and query in user state
+    user_states[user_id]['search_results'] = file_infos
+    user_states[user_id]['search_query'] = text
+    user_states[user_id]['search_page'] = 1
+
+    # Display the first page of results
+    await display_search_results(update, context, page=1)
+
+async def display_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int):
+    user_id = update.effective_user.id
+    lang = user_states[user_id]['language']
+    chat_id = update.effective_chat.id
+
+    file_infos = user_states[user_id]['search_results']
+    query = user_states[user_id]['search_query']
+    total_files = len(file_infos)
+    total_pages = math.ceil(total_files / FILES_PER_PAGE)
+
+    if page < 1 or page > total_pages:
+        logger.error(f"Invalid page number {page} for user {user_id}")
+        return
+
+    # Update current page
+    user_states[user_id]['search_page'] = page
+
+    # Get files for the current page
+    start_idx = (page - 1) * FILES_PER_PAGE
+    end_idx = min(start_idx + FILES_PER_PAGE, total_files)
+    page_files = file_infos[start_idx:end_idx]
+
+    # Generate file list with shortened links
+    file_list = []
+    for file_info in page_files:
+        file_id = file_info['file_id']
+        file_name = file_info['file_name']
+        start_link = f"https://t.me/Naruto_multilangbot?start=file_{file_id}"
+        short_url = await shorten_url(start_link, f"file_{file_id}")
+        file_list.append(f"- {file_name}: {short_url}")
+
+    file_list_text = "\n".join(file_list)
+    message_text = LANGUAGES[lang]['multiple_files_found'].format(
+        count=total_files,
+        query=query,
+        file_list=file_list_text
+    )
+
+    # Create pagination keyboard
+    reply_markup = create_pagination_keyboard(page, total_pages)
+
+    # Send the results
+    await send_message_with_auto_delete(
+        context,
+        chat_id,
+        message_text,
+        reply_markup=reply_markup
+    )
+
+    logger.info(f"User {user_id} viewed page {page}/{total_pages} for query '{query}' with {total_files} results")
+
+    # Log to group
+    if IS_LOGGING_ENABLED:
+        try:
+            await context.bot.send_message(
+                LOG_CHANNEL_ID,
+                f"🔍 {update.effective_user.first_name} searched for '{query}' and viewed page {page}/{total_pages} ({total_files} files)"
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to log to group (file search): {str(e)}")
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -862,6 +1145,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.error(f"Failed to log to group (resolve link): {str(e)}")
         elif query.data.startswith('broadcast_'):
             await broadcast_options(update, context)
+        elif query.data == 'prev_page':
+            current_page = user_states[user_id]['search_page']
+            if current_page > 1:
+                await display_search_results(update, context, page=current_page - 1)
+        elif query.data == 'next_page':
+            current_page = user_states[user_id]['search_page']
+            total_files = len(user_states[user_id]['search_results'])
+            total_pages = math.ceil(total_files / FILES_PER_PAGE)
+            if current_page < total_pages:
+                await display_search_results(update, context, page=current_page + 1)
+        elif query.data == 'noop':
+            pass  # No-op for page indicator button
     except TelegramError as e:
         logger.error(f"Error handling button callback: {str(e)}")
         await send_message_with_auto_delete(
@@ -922,6 +1217,10 @@ async def main():
             print("Invalid gplinks.co API token. Please set a valid token in GPLINK_API.")
             sys.exit(1)
 
+        if not IS_DB_ENABLED:
+            print("Invalid database channel IDs. Please set at least one valid DB_CHANNEL_1 or DB_CHANNEL_2.")
+            sys.exit(1)
+
         # Initialize the Telegram bot
         app = Application.builder().token(BOT_TOKEN).build()
 
@@ -934,7 +1233,9 @@ async def main():
         app.add_handler(CommandHandler('guide', guide))
         app.add_handler(CommandHandler('broadcast', broadcast))
         app.add_handler(CommandHandler('getchatid', get_chat_id))
+        app.add_handler(CommandHandler('cover', cover))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selection))
+        app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_cover_photo))
         app.add_handler(MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, handle_broadcast_creation))
         app.add_handler(CallbackQueryHandler(button))
 
