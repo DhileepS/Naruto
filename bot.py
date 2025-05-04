@@ -21,7 +21,7 @@ from aiohttp import web, ClientSession
 BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
 LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID', '0')  # Default to '0' if not set
 ADMIN_USER_IDS = os.getenv('ADMIN_USER_IDS', '').split(',')  # Default to empty list if not set
-GPLINKS_API_TOKEN = os.getenv('GPLINKS_API_TOKEN', 'YOUR_GPLINKS_API_TOKEN')  # Add gplinks.co API token
+GPLINK_API = os.getenv('GPLINK_API', 'YOUR_GPLINK_API')  # Updated to correct env variable name
 PORT = int(os.getenv('PORT', 10000))  # Render assigns PORT, default to 10000
 
 # Convert LOG_CHANNEL_ID to int and validate
@@ -200,7 +200,7 @@ async def shorten_url(long_url: str, season_key: str) -> str:
     alias = f"season{season_number}_{int(time.time())}"  # Unique alias with timestamp
     api_url = "https://api.gplinks.com/api"
     params = {
-        "api": GPLINKS_API_TOKEN,
+        "api": GPLINK_API,  # Updated to use the correct variable name
         "url": long_url,
         "alias": alias,
         "format": "text"
@@ -601,8 +601,8 @@ async def main():
             print("Invalid admin user ID. Please set a valid admin ID.")
             sys.exit(1)
 
-        if 'YOUR_GPLINKS_API_TOKEN' in GPLINKS_API_TOKEN:
-            print("Invalid gplinks.co API token. Please set a valid token in GPLINKS_API_TOKEN.")
+        if 'YOUR_GPLINK_API' in GPLINK_API:
+            print("Invalid gplinks.co API token. Please set a valid token in GPLINK_API.")
             sys.exit(1)
 
         # Initialize the Telegram bot
