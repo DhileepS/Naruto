@@ -2,6 +2,7 @@ import logging
 import asyncio
 import sys
 import os
+from urllib.parse import urlencode
 from telegram import Bot, ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
@@ -20,6 +21,7 @@ from aiohttp import web, ClientSession
 BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
 LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID', '0')  # Default to '0' if not set
 ADMIN_USER_IDS = os.getenv('ADMIN_USER_IDS', '').split(',')  # Default to empty list if not set
+GPLINKS_API_TOKEN = os.getenv('GPLINKS_API_TOKEN', 'YOUR_GPLINKS_API_TOKEN')  # Add gplinks.co API token
 PORT = int(os.getenv('PORT', 10000))  # Render assigns PORT, default to 10000
 
 # Convert LOG_CHANNEL_ID to int and validate
@@ -191,16 +193,29 @@ season_data = {
     },
 }
 
-# Function to generate a shortlink using TinyURL API
-async def shorten_url(long_url: str) -> str:
-    tinyurl_api = f"https://tinyurl.com/api-create.php?url={long_url}"
+# Function to generate a shortlink using gplinks.co API
+async def shorten_url(long_url: str, season_key: str) -> str:
+    # Use the season number as part of the alias for uniqueness
+    season_number = season_key.split('_')[1]
+    alias = f"season{season_number}_{int(time.time())}"  # Unique alias with timestamp
+    api_url = "https://api.gplinks.com/api"
+    params = {
+        "api": GPLINKS_API_TOKEN,
+        "url": long_url,
+        "alias": alias,
+        "format": "text"
+    }
+    # URL-encode the query parameters
+    query_string = urlencode(params)
+    full_url = f"{api_url}?{query_string}"
+    
     try:
         async with ClientSession() as session:
-            async with session.get(tinyurl_api) as response:
+            async with session.get(full_url) as response:
                 if response.status == 200:
                     short_url = await response.text()
                     logger.info(f"Shortened URL: {long_url} -> {short_url}")
-                    return short_url
+                    return short_url.strip()  # Ensure no trailing whitespace
                 else:
                     logger.error(f"Failed to shorten URL: HTTP {response.status}")
                     return long_url  # Fallback to the original URL if shortening fails
@@ -515,9 +530,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if season_info:
                 current_time = time.time()
                 user_states[user_id]['season_access'][season_key]['resolved_time'] = current_time
-                # Dynamically shorten the start_id_ref URL
+                # Dynamically shorten the start_id_ref URL using gplinks.co API
                 long_url = season_info["start_id_ref"]
-                short_url = await shorten_url(long_url)
+                short_url = await shorten_url(long_url, season_key)
                 season_name = f"Season {season_key.split('_')[1]}"
                 message = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
@@ -584,6 +599,10 @@ async def main():
 
         if not ADMIN_USER_IDS or ADMIN_USER_IDS == ['']:
             print("Invalid admin user ID. Please set a valid admin ID.")
+            sys.exit(1)
+
+        if 'YOUR_GPLINKS_API_TOKEN' in GPLINKS_API_TOKEN:
+            print("Invalid gplinks.co API token. Please set a valid token in GPLINKS_API_TOKEN.")
             sys.exit(1)
 
         # Initialize the Telegram bot
