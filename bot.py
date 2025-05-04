@@ -18,8 +18,14 @@ import os
 
 # Environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
-LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID', -YOUR_LOG_CHANNEL_ID)
-ADMIN_USER_IDS = os.getenv('ADMIN_USER_IDS', 'YOUR_ADMIN_USER_ID').split(',')  # Comma-separated list of admin user IDs
+LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID', '0')  # Default to '0' if not set
+ADMIN_USER_IDS = os.getenv('ADMIN_USER_IDS', '').split(',')  # Default to empty list if not set
+
+# Convert LOG_CHANNEL_ID to int and validate
+try:
+    LOG_CHANNEL_ID = int(LOG_CHANNEL_ID)
+except ValueError:
+    LOG_CHANNEL_ID = 0
 
 # Initialize a Bot instance for sending logs to the group
 log_bot = Bot(token=BOT_TOKEN)
@@ -451,11 +457,11 @@ def main():
             logger.critical("Invalid bot token. Please set a valid token.")
             sys.exit(1)
 
-        if LOG_CHANNEL_ID == -YOUR_LOG_CHANNEL_ID:
+        if LOG_CHANNEL_ID == 0:
             logger.critical("Invalid log group ID. Please set a valid group ID.")
             sys.exit(1)
 
-        if 'YOUR_ADMIN_USER_ID' in ADMIN_USER_IDS:
+        if not ADMIN_USER_IDS or ADMIN_USER_IDS == ['']:
             logger.critical("Invalid admin user ID. Please set a valid admin ID.")
             sys.exit(1)
 
