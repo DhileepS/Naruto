@@ -14,7 +14,7 @@ from telegram.ext import (
 from telegram.error import TelegramError
 from collections import defaultdict
 import time
-from aiohttp import web
+from aiohttp import web, ClientSession
 
 # Environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
@@ -117,10 +117,9 @@ LANGUAGES = {
     }
 }
 
-# Season data (Naruto seasons with placeholder links)
+# Season data (Naruto seasons, removed static 'link' since we'll generate it dynamically)
 season_data = {
     "season_1": {
-        "link": "https://gplinks.co/2jdg",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season1",
         "episodes": {
             "Episode 1": "https://example.com/season1/episode1",
@@ -128,7 +127,6 @@ season_data = {
         }
     },
     "season_2": {
-        "link": "https://gplinks.co/2jdg",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season2",
         "episodes": {
             "Episode 1": "https://example.com/season2/episode1",
@@ -136,7 +134,6 @@ season_data = {
         }
     },
     "season_3": {
-        "link": "https://example.com/season3/link",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season3",
         "episodes": {
             "Episode 1": "https://example.com/season3/episode1",
@@ -144,7 +141,6 @@ season_data = {
         }
     },
     "season_4": {
-        "link": "https://example.com/season4/link",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season4",
         "episodes": {
             "Episode 1": "https://example.com/season4/episode1",
@@ -152,7 +148,6 @@ season_data = {
         }
     },
     "season_5": {
-        "link": "https://example.com/season5/link",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season5",
         "episodes": {
             "Episode 1": "https://example.com/season5/episode1",
@@ -160,7 +155,6 @@ season_data = {
         }
     },
     "season_6": {
-        "link": "https://example.com/season6/link",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season6",
         "episodes": {
             "Episode 1": "https://example.com/season6/episode1",
@@ -168,7 +162,6 @@ season_data = {
         }
     },
     "season_7": {
-        "link": "https://example.com/season7/link",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season7",
         "episodes": {
             "Episode 1": "https://example.com/season7/episode1",
@@ -176,7 +169,6 @@ season_data = {
         }
     },
     "season_8": {
-        "link": "https://example.com/season8/link",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season8",
         "episodes": {
             "Episode 1": "https://example.com/season8/episode1",
@@ -184,7 +176,6 @@ season_data = {
         }
     },
     "season_9": {
-        "link": "https://example.com/season9/link",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season9",
         "episodes": {
             "Episode 1": "https://example.com/season9/episode1",
@@ -192,7 +183,6 @@ season_data = {
         }
     },
     "season_10": {
-        "link": "https://example.com/season10/link",
         "start_id_ref": "https://t.me/Naruto_multilangbot?start=season10",
         "episodes": {
             "Episode 1": "https://example.com/season10/episode1",
@@ -200,6 +190,23 @@ season_data = {
         }
     },
 }
+
+# Function to generate a shortlink using TinyURL API
+async def shorten_url(long_url: str) -> str:
+    tinyurl_api = f"https://tinyurl.com/api-create.php?url={long_url}"
+    try:
+        async with ClientSession() as session:
+            async with session.get(tinyurl_api) as response:
+                if response.status == 200:
+                    short_url = await response.text()
+                    logger.info(f"Shortened URL: {long_url} -> {short_url}")
+                    return short_url
+                else:
+                    logger.error(f"Failed to shorten URL: HTTP {response.status}")
+                    return long_url  # Fallback to the original URL if shortening fails
+    except Exception as e:
+        logger.error(f"Error shortening URL: {str(e)}")
+        return long_url  # Fallback to the original URL if an error occurs
 
 async def schedule_message_deletion(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
     try:
@@ -232,7 +239,6 @@ async def send_season_info(update: Update, context: ContextTypes.DEFAULT_TYPE, s
         return
 
     try:
-        link = season_info["link"]
         start_id_reference = season_info["start_id_ref"]
         season_name = f"Season {season_key.split('_')[1]}"
         logger.info(f"User {user_id} accessed {season_key}: {start_id_reference}")
@@ -509,11 +515,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if season_info:
                 current_time = time.time()
                 user_states[user_id]['season_access'][season_key]['resolved_time'] = current_time
-                link = season_info["link"]
+                # Dynamically shorten the start_id_ref URL
+                long_url = season_info["start_id_ref"]
+                short_url = await shorten_url(long_url)
                 season_name = f"Season {season_key.split('_')[1]}"
                 message = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"{season_name} Link: {link}"
+                    text=f"{season_name} Link: {short_url}"
                 )
                 asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
