@@ -149,6 +149,7 @@ LANGUAGES = {
         'cover_invalid': 'Please send a valid photo. 🚫',
         'not_subscribed': f'You must join {UPDATES_CHANNEL} to use this bot. 📢\nJoin and try again: https://t.me/bot_paiyan_official',
         'stats_message': '📊 **User Stats**\nTotal Users: {total}\nNew Users (last 10 min): {new}',
+        'job_queue_missing': '⚠️ User stats notifications disabled: JobQueue not available. Install python-telegram-bot[job-queue].'
     }
 }
 
@@ -331,13 +332,22 @@ async def episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         short_url = await shorten_url(episode_url, f"episode{episode_number}")
+        caption = f"Episode {episode_number} (Season {season_num}) Link: {short_url}\n" \
+                  f"How to resolve: Follow the guide at https://t.me/+_SQNyZD8hns3NzY1\n" \
+                  f"Updates: {UPDATES_CHANNEL}"
         reply_markup = create_link_keyboard()
-        await send_message_with_auto_delete(
-            context,
-            chat_id,
-            f"Episode {episode_number} (Season {season_num}) Link: {short_url}",
+        if COVER_PHOTO_ID:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=COVER_PHOTO_ID,
+                caption="Episode Cover 📷"
+            )
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=caption,
             reply_markup=reply_markup
         )
+        asyncio.create_task(schedule_message_deletion(context, chat_id, (await context.bot.get_updates())[-1].message.message_id))
         logger.info(f"User {user_id} requested Episode {episode_number}")
 
         if IS_LOGGING_ENABLED:
@@ -460,7 +470,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         photo=COVER_PHOTO_ID,
                         caption="Cover Photo 📷"
                     )
-                caption = f"File Link: https://t.me/Naruto_multilangbot?start=file_{file_id}\n" \
+                start_link = f"https://t.me/Naruto_multilangbot?start=file_{file_id}"
+                short_url = await shorten_url(start_link, f"file_{file_id}")
+                caption = f"File Link: {short_url}\n" \
                           f"How to resolve: Follow the guide at https://t.me/+_SQNyZD8hns3NzY1\n" \
                           f"Updates: {UPDATES_CHANNEL}"
                 await context.bot.send_document(
@@ -731,6 +743,8 @@ async def display_search_results(update: Update, context: ContextTypes.DEFAULT_T
 
     file_list_text = "\n".join(file_list)
     message_text = LANGUAGES[lang]['multiple_files_found'].format(count=total_files, query=query, file_list=file_list_text)
+    caption = f"How to resolve: Follow the guide at https://t.me/+_SQNyZD8hns3NzY1\n" \
+              f"Updates: {UPDATES_CHANNEL}"
     reply_markup = create_pagination_keyboard(page, total_pages)
 
     if COVER_PHOTO_ID:
@@ -739,7 +753,7 @@ async def display_search_results(update: Update, context: ContextTypes.DEFAULT_T
             photo=COVER_PHOTO_ID,
             caption="Search Results Cover 📷"
         )
-    await send_message_with_auto_delete(context, chat_id, message_text, reply_markup=reply_markup)
+    await send_message_with_auto_delete(context, chat_id, f"{message_text}\n\n{caption}", reply_markup=reply_markup)
     logger.info(f"User {user_id} viewed page {page}/{total_pages} for '{query}'")
 
     if IS_LOGGING_ENABLED:
@@ -772,11 +786,20 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 long_url = season_info["start_id_ref"]
                 short_url = await shorten_url(long_url, season_key)
                 season_name = f"Season {season_key.split('_')[1]}"
+                caption = f"{season_name} Link: {short_url}\n" \
+                          f"How to resolve: Follow the guide at https://t.me/+_SQNyZD8hns3NzY1\n" \
+                          f"Updates: {UPDATES_CHANNEL}"
                 reply_markup = create_link_keyboard()
+                if COVER_PHOTO_ID:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=COVER_PHOTO_ID,
+                        caption="Season Cover 📷"
+                    )
                 await send_message_with_auto_delete(
                     context,
                     chat_id,
-                    f"{season_name} Link: {short_url}",
+                    caption,
                     reply_markup=reply_markup
                 )
                 if IS_LOGGING_ENABLED:
@@ -868,8 +891,19 @@ async def main():
         check_lock_file()
 
         app = Application.builder().token(BOT_TOKEN).build()
+
+        # Check for JobQueue availability
         job_queue = app.job_queue
-        job_queue.run_repeating(send_user_stats, interval=USER_STATS_INTERVAL, first=USER_STATS_INTERVAL)
+        if job_queue is not None:
+            job_queue.run_repeating(send_user_stats, interval=USER_STATS_INTERVAL, first=USER_STATS_INTERVAL)
+            logger.info("User stats notification scheduled every 10 minutes")
+        else:
+            logger.warning("JobQueue not available. User stats notifications disabled.")
+            if IS_LOGGING_ENABLED:
+                await log_bot.send_message(
+                    chat_id=LOG_CHANNEL_ID,
+                    text=LANGUAGES['en']['job_queue_missing']
+                )
 
         app.add_handler(CommandHandler('start', start))
         app.add_handler(CommandHandler('episode', episode))
@@ -903,6 +937,11 @@ async def main():
 
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
+        if IS_LOGGING_ENABLED:
+            await log_bot.send_message(
+                chat_id=LOG_CHANNEL_ID,
+                text=f"⚠️ Bot failed to start: {e}"
+            )
         raise
     finally:
         if 'app' in locals():
