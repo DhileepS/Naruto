@@ -103,7 +103,7 @@ LANGUAGES = {
         'welcome': 'Choose an option:',
         'invalid_season': 'Invalid season selection.',
         'season_not_found': 'Season not found.',
-        'help': 'Available commands:\n/start - Start the bot and see the menu\n/clearhistory - Remove history\n/owner - Show owner info\n/mainchannel - Join our main channel\n/guide - View usage guide\n/broadcast - Send a message to all users (admin only)',
+        'help': 'Available commands:\n/start - Start the bot and see the menu\n/clearhistory - Remove history\n/owner - Show owner info\n/mainchannel - Join our main channel\n/guide - View usage guide\n/broadcast - Send a message to all users (admin only)\n/getchatid - Get the chat ID of this group (for debugging)',
         'settings': 'Settings are not yet implemented in this version.',
         'status': 'Bot is running normally.',
         'status_error': 'Bot is experiencing issues. Please try again later.',
@@ -209,6 +209,18 @@ async def schedule_message_deletion(context: ContextTypes.DEFAULT_TYPE, chat_id:
     except TelegramError as e:
         logger.error(f"Failed to delete message {message_id}: {str(e)}")
 
+# Debug command to get the chat ID
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    logger.info(f"Chat ID requested: {chat_id}")
+    try:
+        message = await update.message.reply_text(f"This chat's ID is: {chat_id}")
+        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+    except TelegramError as e:
+        logger.error(f"Error in get_chat_id command: {str(e)}")
+        message = await update.message.reply_text("An error occurred. Please try again later.")
+        asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
+
 async def send_season_info(update: Update, context: ContextTypes.DEFAULT_TYPE, season_key: str):
     user_id = update.effective_user.id
     lang = user_states[user_id]['language']
@@ -263,9 +275,12 @@ async def send_season_info(update: Update, context: ContextTypes.DEFAULT_TYPE, s
         asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
         user_states[user_id]['last_season'] = season_key
 
-        # Log to group
+        # Log to group with error handling
         if IS_LOGGING_ENABLED:
-            await context.bot.send_message(LOG_CHANNEL_ID, f"📥 {update.effective_user.first_name} accessed {season_name}")
+            try:
+                await context.bot.send_message(LOG_CHANNEL_ID, f"📥 {update.effective_user.first_name} accessed {season_name}")
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (season info): {str(e)}")
     except TelegramError as e:
         logger.error(f"Error sending season info: {str(e)}")
         message = await context.bot.send_message(chat_id=update.effective_chat.id, text="An error occurred. Please try again later.")
@@ -294,9 +309,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} used /start command")
         asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-        # Log to group
+        # Log to group with error handling
         if IS_LOGGING_ENABLED:
-            await context.bot.send_message(LOG_CHANNEL_ID, f"🚀 {update.effective_user.first_name} started the bot")
+            try:
+                await context.bot.send_message(LOG_CHANNEL_ID, f"🚀 {update.effective_user.first_name} started the bot")
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (start command): {str(e)}")
     except TelegramError as e:
         logger.error(f"Error in start command: {str(e)}")
         message = await update.message.reply_text("An error occurred. Please try again later.")
@@ -316,9 +334,12 @@ async def clearhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} used /clearhistory command")
         asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-        # Log to group
+        # Log to group with error handling
         if IS_LOGGING_ENABLED:
-            await context.bot.send_message(LOG_CHANNEL_ID, f"🗑️ {update.effective_user.first_name} cleared their history")
+            try:
+                await context.bot.send_message(LOG_CHANNEL_ID, f"🗑️ {update.effective_user.first_name} cleared their history")
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (clearhistory command): {str(e)}")
     except TelegramError as e:
         logger.error(f"Error in clearhistory command: {str(e)}")
         message = await update.message.reply_text("An error occurred. Please try again later.")
@@ -332,9 +353,12 @@ async def owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} used /owner command")
         asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-        # Log to group
+        # Log to group with error handling
         if IS_LOGGING_ENABLED:
-            await context.bot.send_message(LOG_CHANNEL_ID, f"👨‍💼 {update.effective_user.first_name} requested owner info")
+            try:
+                await context.bot.send_message(LOG_CHANNEL_ID, f"👨‍💼 {update.effective_user.first_name} requested owner info")
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (owner command): {str(e)}")
     except TelegramError as e:
         logger.error(f"Error in owner command: {str(e)}")
         message = await update.message.reply_text("An error occurred. Please try again later.")
@@ -348,9 +372,12 @@ async def mainchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} used /mainchannel command")
         asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-        # Log to group
+        # Log to group with error handling
         if IS_LOGGING_ENABLED:
-            await context.bot.send_message(LOG_CHANNEL_ID, f"📢 {update.effective_user.first_name} requested the main channel")
+            try:
+                await context.bot.send_message(LOG_CHANNEL_ID, f"📢 {update.effective_user.first_name} requested the main channel")
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (mainchannel command): {str(e)}")
     except TelegramError as e:
         logger.error(f"Error in mainchannel command: {str(e)}")
         message = await update.message.reply_text("An error occurred. Please try again later.")
@@ -364,9 +391,12 @@ async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} used /guide command")
         asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-        # Log to group
+        # Log to group with error handling
         if IS_LOGGING_ENABLED:
-            await context.bot.send_message(LOG_CHANNEL_ID, f"📚 {update.effective_user.first_name} viewed the usage guide")
+            try:
+                await context.bot.send_message(LOG_CHANNEL_ID, f"📚 {update.effective_user.first_name} viewed the usage guide")
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (guide command): {str(e)}")
     except TelegramError as e:
         logger.error(f"Error in guide command: {str(e)}")
         message = await update.message.reply_text("An error occurred. Please try again later.")
@@ -381,18 +411,24 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"User {user_id} attempted /broadcast but is not an admin")
             asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-            # Log to group
+            # Log to group with error handling
             if IS_LOGGING_ENABLED:
-                await context.bot.send_message(LOG_CHANNEL_ID, f"🚫 {update.effective_user.first_name} attempted to broadcast but is not an admin")
+                try:
+                    await context.bot.send_message(LOG_CHANNEL_ID, f"🚫 {update.effective_user.first_name} attempted to broadcast but is not an admin")
+                except TelegramError as e:
+                    logger.error(f"Failed to log to group (broadcast permission denied): {str(e)}")
             return
 
         message = await update.message.reply_text(LANGUAGES[lang]['broadcast'])
         logger.info(f"User {user_id} used /broadcast command")
         asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-        # Log to group (simulating broadcast)
+        # Log to group with error handling
         if IS_LOGGING_ENABLED:
-            await context.bot.send_message(LOG_CHANNEL_ID, f"📢 {update.effective_user.first_name} initiated a broadcast: New season links available!")
+            try:
+                await context.bot.send_message(LOG_CHANNEL_ID, f"📢 {update.effective_user.first_name} initiated a broadcast: New season links available!")
+            except TelegramError as e:
+                logger.error(f"Failed to log to group (broadcast command): {str(e)}")
     except TelegramError as e:
         logger.error(f"Error in broadcast command: {str(e)}")
         message = await update.message.reply_text("An error occurred. Please try again later.")
@@ -421,9 +457,12 @@ async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"User {user_id} used /help command")
             asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-            # Log to group
+            # Log to group with error handling
             if IS_LOGGING_ENABLED:
-                await context.bot.send_message(LOG_CHANNEL_ID, f"ℹ️ {update.effective_user.first_name} used /help")
+                try:
+                    await context.bot.send_message(LOG_CHANNEL_ID, f"ℹ️ {update.effective_user.first_name} used /help")
+                except TelegramError as e:
+                    logger.error(f"Failed to log to group (help command): {str(e)}")
         elif text == 'settings':
             message = await update.message.reply_text(LANGUAGES[lang]['settings'])
             asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
@@ -460,9 +499,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 asyncio.create_task(schedule_message_deletion(context, update.effective_chat.id, message.message_id))
 
-                # Log to group
+                # Log to group with error handling
                 if IS_LOGGING_ENABLED:
-                    await context.bot.send_message(LOG_CHANNEL_ID, f"🔗 {update.effective_user.first_name} resolved link for {season_name}")
+                    try:
+                        await context.bot.send_message(LOG_CHANNEL_ID, f"🔗 {update.effective_user.first_name} resolved link for {season_name}")
+                    except TelegramError as e:
+                        logger.error(f"Failed to log to group (resolve link): {str(e)}")
     except TelegramError as e:
         logger.error(f"Error handling button callback: {str(e)}")
         message = await context.bot.send_message(
@@ -479,6 +521,7 @@ async def set_command_menu(application):
         BotCommand(command="mainchannel", description="Join our main channel"),
         BotCommand(command="guide", description="View usage guide"),
         BotCommand(command="broadcast", description="Send a message to all users (admin only)"),
+        BotCommand(command="getchatid", description="Get the chat ID of this group (for debugging)"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -527,6 +570,7 @@ async def main():
         app.add_handler(CommandHandler('mainchannel', mainchannel))
         app.add_handler(CommandHandler('guide', guide))
         app.add_handler(CommandHandler('broadcast', broadcast))
+        app.add_handler(CommandHandler('getchatid', get_chat_id))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selection))
         app.add_handler(CallbackQueryHandler(button))
 
