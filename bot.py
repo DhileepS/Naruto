@@ -150,6 +150,15 @@ def generate_season_data():
 # Season data
 season_data = generate_season_data()
 
+# Helper function to create the common inline keyboard for links
+def create_link_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("How to Resolve", url="https://t.me/+_SQNyZD8hns3NzY1")],
+        [InlineKeyboardButton("CE Sub", url="https://t.me/ce_sub_placeholder")],  # Replace with actual URL
+        [InlineKeyboardButton("Try Again", url="https://t.me/bot_paiyan_official")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 # Helper function to send messages and schedule deletion
 async def send_message_with_auto_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_markup=None):
     try:
@@ -262,11 +271,8 @@ async def episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Shorten the episode URL
         short_url = await shorten_url(episode_url, f"episode{episode_number}")
         
-        # Create the "How to Resolve" button
-        keyboard = [
-            [InlineKeyboardButton("How to Resolve", url="https://t.me/+_SQNyZD8hns3NzY1")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        # Use the common link keyboard
+        reply_markup = create_link_keyboard()
 
         # Send the episode link
         await send_message_with_auto_delete(
@@ -621,10 +627,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 long_url = season_info["start_id_ref"]
                 short_url = await shorten_url(long_url, season_key)
                 season_name = f"Season {season_key.split('_')[1]}"
-                keyboard = [
-                    [InlineKeyboardButton("How to Resolve", url="https://t.me/+_SQNyZD8hns3NzY1")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
+                reply_markup = create_link_keyboard()
                 await send_message_with_auto_delete(
                     context,
                     chat_id,
