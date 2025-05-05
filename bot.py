@@ -23,10 +23,17 @@ from telegram.ext import (
 from telegram.error import TelegramError
 from collections import defaultdict
 import time
-from aiohttp import ClientSession
+from aiohttp import ClientSession, web
 import math
 import aiolimiter
 from async_timeout import timeout
+
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
@@ -37,6 +44,7 @@ GPLINK_API = os.getenv('GPLINK_API', 'YOUR_GPLINK_API')
 PORT = int(os.getenv('PORT', 10000))
 TOTAL_EPISODES = int(os.getenv('TOTAL_EPISODES', 220))
 EPISODES_PER_SEASON = int(os.getenv('EPISODES_PER_SEASON', 25))
+SEARCH_RESULT_LIMIT = int(os.getenv('SEARCH_RESULT_LIMIT', 50))
 UPDATES_CHANNEL = '@bot_paiyan_official'
 
 # Validate environment
@@ -45,7 +53,7 @@ try:
     DB_CHANNEL_1 = int(DB_CHANNEL_1)
     ADMIN_USER_IDS = ADMIN_USER_IDS.split(',') if ADMIN_USER_IDS else []
 except ValueError as e:
-    logging.error(f"Invalid environment variable format: {e}")
+    logger.error(f"Invalid environment variable format: {e}")
     sys.exit(1)
 
 IS_LOGGING_ENABLED = LOG_CHANNEL_ID != 0 and LOG_CHANNEL_ID < 0
@@ -96,20 +104,24 @@ def load_settings():
             return settings
     except FileNotFoundError:
         logger.warning("settings.json not found, using default settings")
-        return {
+        default_settings = {
             'start_text': '🌟 Welcome! Choose a season or option:',
             'start_pic': None,
             'cover_pic': None,
             'season_data': generate_season_data()
         }
+        save_settings(default_settings)  # Create settings.json with defaults
+        return default_settings
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in settings.json: {e}")
-        return {
+        default_settings = {
             'start_text': '🌟 Welcome! Choose a season or option:',
             'start_pic': None,
             'cover_pic': None,
             'season_data': generate_season_data()
         }
+        save_settings(default_settings)
+        return default_settings
 
 def save_settings(settings):
     try:
@@ -118,6 +130,8 @@ def save_settings(settings):
         logger.info("Saved settings to settings.json")
     except Exception as e:
         logger.error(f"Failed to save settings.json: {e}")
+        if IS_LOGGING_ENABLED:
+            asyncio.create_task(log_bot.send_message(LOG_CHANNEL_ID, f"Failed to save settings.json: {e}"))
 
 settings = load_settings()
 COVER_PHOTO_ID = settings['cover_pic']
@@ -284,7 +298,7 @@ async def search_file_in_channel(context: ContextTypes.DEFAULT_TYPE, query: str,
         try:
             async with timeout(SEARCH_TIMEOUT):
                 async for message in context.bot.get_chat_history(chat_id=DB_CHANNEL_1, limit=200):
-                    if len(matching_files) >= 50:  # Stop after 50 matches
+                    if len(matching_files) >= SEARCH_RESULT_LIMIT:  # Dynamic limit
                         break
                     if message.document or message.video or message.audio or message.photo:
                         file_name = (message.document.file_name if message.document else
@@ -303,6 +317,7 @@ async def search_file_in_channel(context: ContextTypes.DEFAULT_TYPE, query: str,
     # Sort results alphabetically by file name
     matching_files.sort(key=lambda x: x['file_name'].lower())
     search_cache[cache_key] = {'results': matching_files, 'timestamp': time.time()}
+    logger.info(f"User {user_id} searched for '{query}', found {len(matching_files)} results")
     return matching_files
 
 async def retry_with_backoff(coro, max_retries=3, initial_delay=1):
@@ -317,6 +332,10 @@ async def retry_with_backoff(coro, max_retries=3, initial_delay=1):
             delay = initial_delay * (2 ** attempt)
             logger.warning(f"Retry {attempt + 1}/{max_retries} after {delay}s: {e}")
             await asyncio.sleep(delay)
+
+# Health check endpoint
+async def health_check(request):
+    return web.Response(text="Bot is running")
 
 # Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -792,13 +811,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error handling button: {e}")
             await send_message_with_auto_delete(context, chat_id, f"{LANGUAGES['file_search_error']} {LANGUAGES['retry_error']}")
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
 async def main():
     try:
         # Validate environment
@@ -820,26 +832,39 @@ async def main():
         if TOTAL_EPISODES <= 0 or EPISODES_PER_SEASON <= 0:
             logger.error("Invalid TOTAL_EPISODES or EPISODES_PER_SEASON")
             sys.exit(1)
+        if SEARCH_RESULT_LIMIT <= 0:
+            logger.error("Invalid SEARCH_RESULT_LIMIT")
+            sys.exit(1)
 
-        logger.info(f"Bot configuration: SEARCH_TIMEOUT={SEARCH_TIMEOUT}s, TOTAL_EPISODES={TOTAL_EPISODES}, EPISODES_PER_SEASON={EPISODES_PER_SEASON}")
+        logger.info(f"Bot configuration: SEARCH_TIMEOUT={SEARCH_TIMEOUT}s, TOTAL_EPISODES={TOTAL_EPISODES}, EPISODES_PER_SEASON={EPISODES_PER_SEASON}, SEARCH_RESULT_LIMIT={SEARCH_RESULT_LIMIT}")
 
-        app = Application.builder().token(BOT_TOKEN).build()
+        # Start HTTP server for health checks
+        app = web.Application()
+        app.add_routes([web.get('/health', health_check)])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        await site.start()
+        logger.info(f"Health check server started on port {PORT}")
 
-        app.add_handler(CommandHandler('start', start))
-        app.add_handler(CommandHandler('episode', episode))
-        app.add_handler(CommandHandler('clearhistory', clearhistory))
-        app.add_handler(CommandHandler('owner', owner))
-        app.add_handler(CommandHandler('mainchannel', mainchannel))
-        app.add_handler(CommandHandler('guide', guide))
-        app.add_handler(CommandHandler('cover', cover))
-        app.add_handler(CommandHandler('edit', edit))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selection))
-        app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_cover_photo))
-        app.add_handler(CallbackQueryHandler(button))
+        # Start Telegram bot
+        bot_app = Application.builder().token(BOT_TOKEN).build()
 
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        bot_app.add_handler(CommandHandler('start', start))
+        bot_app.add_handler(CommandHandler('episode', episode))
+        bot_app.add_handler(CommandHandler('clearhistory', clearhistory))
+        bot_app.add_handler(CommandHandler('owner', owner))
+        bot_app.add_handler(CommandHandler('mainchannel', mainchannel))
+        bot_app.add_handler(CommandHandler('guide', guide))
+        bot_app.add_handler(CommandHandler('cover', cover))
+        bot_app.add_handler(CommandHandler('edit', edit))
+        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selection))
+        bot_app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_cover_photo))
+        bot_app.add_handler(CallbackQueryHandler(button))
+
+        await bot_app.initialize()
+        await bot_app.start()
+        await bot_app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
         logger.info("Bot started")
 
         # Keep the bot running
