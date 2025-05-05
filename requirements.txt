@@ -1,4 +1,4 @@
-python-telegram-bot[job-queue]==20.6
-APScheduler==3.10.4
+python-telegram-bot==20.7
 aiohttp==3.9.5
-aiolimiter
+aiolimiter==1.1.0
+async-timeout==4.0.3
