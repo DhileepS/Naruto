@@ -20,7 +20,6 @@ from aiohttp import ClientSession
 import math
 import aiolimiter
 from async_timeout import timeout
-import uuid
 
 # Environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
@@ -45,6 +44,7 @@ FILES_PER_PAGE = 10
 AUTO_DELETE_DURATION = 3600
 RATE_LIMIT = 30 / 60  # 30 requests/min
 SEARCH_CACHE_DURATION = 300  # 5 min
+SEARCH_TIMEOUT = 10  # 10 seconds for search
 
 # Rate limiter and search cache
 rate_limiters = defaultdict(lambda: aiolimiter.AsyncLimiter(RATE_LIMIT, 60))
@@ -117,6 +117,7 @@ LANGUAGES = {
     'edit_link_confirm': 'Finish editing this season? This will overwrite settings.',
     'edit_link_saved': 'Season link settings saved! ✅',
     'loading': 'Processing your request… ⏳',
+    'searching': 'Trying to find your query... 🔍',
     'rate_limit': 'Too many requests! Wait a moment and try again. ⏲️',
     'retry_error': 'Error occurred. Retrying… 🔄',
     'cancel': 'Operation cancelled. ✅ Back to edit menu.',
@@ -250,24 +251,22 @@ async def search_file_in_channel(context: ContextTypes.DEFAULT_TYPE, query: str,
     matching_files = []
     if IS_DB_ENABLED and DB_CHANNEL_1 < 0:
         try:
-            async for message in context.bot.get_chat_history(chat_id=DB_CHANNEL_1, limit=500):
-                if message.document or message.video or message.audio or message.photo:
-                    file_name = None
-                    if message.document:
-                        file_name = message.document.file_name
-                    elif message.video:
-                        file_name = message.caption or "video_file"
-                    elif message.audio:
-                        file_name = message.audio.file_name or "audio_file"
-                    elif message.photo:
-                        file_name = message.caption or "photo_file"
-                    if file_name and query.lower() in file_name.lower():
-                        file_id = (message.document.file_id if message.document else
-                                  message.video.file_id if message.video else
-                                  message.audio.file_id if message.audio else
-                                  message.photo[-1].file_id)
-                        matching_files.append({'file_id': file_id, 'file_name': file_name})
-        except TelegramError as e:
+            async with timeout(SEARCH_TIMEOUT):
+                async for message in context.bot.get_chat_history(chat_id=DB_CHANNEL_1, limit=200):
+                    if len(matching_files) >= 50:  # Stop after 50 matches
+                        break
+                    if message.document or message.video or message.audio or message.photo:
+                        file_name = (message.document.file_name if message.document else
+                                     message.caption or "video_file" if message.video else
+                                     message.audio.file_name or "audio_file" if message.audio else
+                                     message.caption or "photo_file")
+                        if file_name and query.lower() in file_name.lower():
+                            file_id = (message.document.file_id if message.document else
+                                       message.video.file_id if message.video else
+                                       message.audio.file_id if message.audio else
+                                       message.photo[-1].file_id)
+                            matching_files.append({'file_id': file_id, 'file_name': file_name})
+        except (TelegramError, asyncio.TimeoutError) as e:
             logger.error(f"Error searching channel {DB_CHANNEL_1}: {e}")
 
     search_cache[cache_key] = {'results': matching_files, 'timestamp': time.time()}
@@ -606,6 +605,7 @@ async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['db_not_configured'])
             return
 
+        await context.bot.send_message(chat_id=chat_id, text=LANGUAGES['searching'])
         loading = await context.bot.send_message(chat_id=chat_id, text=LANGUAGES['loading'])
         try:
             file_infos = await retry_with_backoff(search_file_in_channel(context, text, user_id))
