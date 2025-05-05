@@ -57,10 +57,6 @@ except ValueError as e:
     logger.error(f"Invalid environment variable format: {e}")
     sys.exit(1)
 
-if not WEBHOOK_URL:
-    logger.error("WEBHOOK_URL not set")
-    sys.exit(1)
-
 IS_LOGGING_ENABLED = LOG_CHANNEL_ID != 0 and LOG_CHANNEL_ID < 0
 IS_DB_ENABLED = DB_CHANNEL_1 != 0 and DB_CHANNEL_1 < 0
 
@@ -176,6 +172,8 @@ user_states = defaultdict(lambda: {
     'search_page': 1,
     'search_query': None,
     'edit_state': None,
+    'awaiting_broadcast': False,
+    'broadcast_content': None,
 })
 
 # Language support (English only)
@@ -220,8 +218,10 @@ LANGUAGES = {
     'cancel': 'Operation cancelled. ✅ Back to edit menu.',
     'refine_search': 'Refine search with a new keyword.',
     'broadcast_prompt': 'Send the message to broadcast to all users.',
+    'broadcast_confirm': 'Confirm broadcast to {user_count} users:\n\n{content}\n\nProceed?',
     'broadcast_success': 'Broadcast sent to {success_count} users. Failed: {fail_count}.',
-    'broadcast_invalid': 'Please send a valid text message, photo, or video.'
+    'broadcast_invalid': 'Please send a valid text message, photo, or video.',
+    'broadcast_cancelled': 'Broadcast cancelled.'
 }
 
 # Helper functions
@@ -263,6 +263,12 @@ def create_confirm_keyboard(action: str, data: str):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Yes", callback_data=f"confirm_{action}_{data}")],
         [InlineKeyboardButton("❌ No", callback_data="cancel")]
+    ])
+
+def create_broadcast_confirm_keyboard(content: str):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Send", callback_data="confirm_broadcast")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")]
     ])
 
 async def send_message_with_auto_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_markup=None):
@@ -471,7 +477,9 @@ async def clearhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'search_results': [],
             'search_page': 1,
             'search_query': None,
-            'edit_state': None
+            'edit_state': None,
+            'awaiting_broadcast': False,
+            'broadcast_content': None
         }
         await send_message_with_auto_delete(context, chat_id, LANGUAGES['clearhistory'])
         logger.info(f"User {user_id} cleared history")
@@ -543,7 +551,7 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with rate_limiters[user_id]:
         if user_id not in ADMIN_USER_IDS:
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['not_allowed'])
-            logger.info(f"User {user_id} attempted /edit (not admin)")
+            logger.info(f"User {user_id} attempted /edit (not admin, ADMIN_USER_IDS={ADMIN_USER_IDS})")
             return
 
         user_states[user_id]['edit_state'] = {'stage': 'menu'}
@@ -609,7 +617,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with rate_limiters[user_id]:
         if user_id not in ADMIN_USER_IDS:
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['not_allowed'])
-            logger.info(f"User {user_id} attempted /broadcast (not admin)")
+            logger.info(f"User {user_id} attempted /broadcast (not admin, ADMIN_USER_IDS={ADMIN_USER_IDS})")
             return
 
         user_states[user_id]['awaiting_broadcast'] = True
@@ -625,13 +633,50 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
 
     async with rate_limiters[user_id]:
         if update.message.text or update.message.photo or update.message.video:
-            user_states[user_id]['awaiting_broadcast'] = False
-            success_count = 0
-            fail_count = 0
             content = update.message.text or update.message.caption or ""
             photo = update.message.photo[-1].file_id if update.message.photo else None
             video = update.message.video.file_id if update.message.video else None
+            user_states[user_id]['awaiting_broadcast'] = False
+            user_states[user_id]['broadcast_content'] = {
+                'text': content,
+                'photo': photo,
+                'video': video
+            }
+            preview = content if content else "Photo" if photo else "Video"
+            await send_message_with_auto_delete(
+                context,
+                chat_id,
+                LANGUAGES['broadcast_confirm'].format(user_count=len(users), content=preview),
+                reply_markup=create_broadcast_confirm_keyboard(preview)
+            )
+            logger.info(f"User {user_id} submitted broadcast content: {preview}")
+        else:
+            await send_message_with_auto_delete(context, chat_id, LANGUAGES['broadcast_invalid'])
 
+async def handle_broadcast_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = str(update.effective_user.id)
+    chat_id = update.effective_chat.id
+
+    async with rate_limiters[user_id]:
+        if user_id not in ADMIN_USER_IDS:
+            await send_message_with_auto_delete(context, chat_id, LANGUAGES['not_allowed'])
+            return
+
+        if query.data == 'confirm_broadcast':
+            broadcast_content = user_states[user_id].get('broadcast_content')
+            if not broadcast_content:
+                await send_message_with_auto_delete(context, chat_id, "No broadcast content found.")
+                return
+
+            content = broadcast_content['text']
+            photo = broadcast_content['photo']
+            video = broadcast_content['video']
+            success_count = 0
+            fail_count = 0
+
+            logger.info(f"User {user_id} confirmed broadcast: {content[:50]}...")
             for target_user_id in users:
                 async with broadcast_limiter:
                     try:
@@ -665,11 +710,14 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             if IS_LOGGING_ENABLED:
                 await log_bot.send_message(
                     LOG_CHANNEL_ID,
-                    f"Broadcast by {user_id}: {message}"
+                    f"Broadcast by {user_id}: {message}\nContent: {content[:100]}..."
                 )
             logger.info(f"User {user_id} completed broadcast: {success_count} succeeded, {fail_count} failed")
-        else:
-            await send_message_with_auto_delete(context, chat_id, LANGUAGES['broadcast_invalid'])
+            user_states[user_id]['broadcast_content'] = None
+        elif query.data == 'cancel_broadcast':
+            user_states[user_id]['broadcast_content'] = None
+            await send_message_with_auto_delete(context, chat_id, LANGUAGES['broadcast_cancelled'])
+            logger.info(f"User {user_id} cancelled broadcast")
 
 async def edit_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -680,7 +728,7 @@ async def edit_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with rate_limiters[user_id]:
         if user_id not in ADMIN_USER_IDS:
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['not_allowed'])
-            logger.info(f"User {user_id} attempted edit button (not admin)")
+            logger.info(f"User {user_id} attempted edit button (not admin, ADMIN_USER_IDS={ADMIN_USER_IDS})")
             return
 
         if query.data == 'edit_start_text':
@@ -902,6 +950,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await send_message_with_auto_delete(context, chat_id, season_info['content'] or caption, reply_markup=reply_markup)
             elif query.data.startswith('edit_') or query.data.startswith('confirm_') or query.data == 'cancel':
                 await edit_button(update, context)
+            elif query.data == 'confirm_broadcast' or query.data == 'cancel_broadcast':
+                await handle_broadcast_confirm(update, context)
             elif query.data == 'prev_page':
                 current_page = user_states[user_id]['search_page']
                 if current_page > 1:
@@ -976,7 +1026,7 @@ async def main():
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         await site.start()
-        logger.info(f"Webhook server started on port {PORT}")
+        logger.info(f"HTTP server started on port {PORT}")
 
         # Initialize Telegram bot
         bot_app = Application.builder().token(BOT_TOKEN).build()
@@ -998,16 +1048,25 @@ async def main():
         await bot_app.initialize()
         await bot_app.start()
 
-        # Set webhook
-        webhook_path = f"{WEBHOOK_URL}/"
-        try:
-            await bot_app.bot.set_webhook(webhook_path)
-            logger.info(f"Webhook set to {webhook_path}")
-        except TelegramError as e:
-            logger.error(f"Failed to set webhook: {e}")
+        # Configure webhook or polling
+        if WEBHOOK_URL:
+            webhook_path = f"{WEBHOOK_URL}/"
+            try:
+                await bot_app.bot.set_webhook(webhook_path)
+                logger.info(f"Running in webhook mode: {webhook_path}")
+                if IS_LOGGING_ENABLED:
+                    await log_bot.send_message(LOG_CHANNEL_ID, f"Bot started in webhook mode: {webhook_path}")
+            except TelegramError as e:
+                logger.error(f"Failed to set webhook: {e}")
+                if IS_LOGGING_ENABLED:
+                    await log_bot.send_message(LOG_CHANNEL_ID, f"Failed to set webhook: {e}")
+                sys.exit(1)
+        else:
+            logger.warning("WEBHOOK_URL not set, falling back to polling mode")
             if IS_LOGGING_ENABLED:
-                await log_bot.send_message(LOG_CHANNEL_ID, f"Failed to set webhook: {e}")
-            sys.exit(1)
+                await log_bot.send_message(LOG_CHANNEL_ID, "WEBHOOK_URL not set, bot running in polling mode")
+            await bot_app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+            logger.info("Running in polling mode")
 
         logger.info("Bot started")
 
