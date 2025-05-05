@@ -41,6 +41,7 @@ LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID', '0')
 DB_CHANNEL_1 = os.getenv('DB_CHANNEL_1', '0')
 ADMIN_USER_IDS = os.getenv('ADMIN_USER_IDS', '')
 GPLINK_API = os.getenv('GPLINK_API', 'YOUR_GPLINK_API')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
 PORT = int(os.getenv('PORT', 10000))
 TOTAL_EPISODES = int(os.getenv('TOTAL_EPISODES', 220))
 EPISODES_PER_SEASON = int(os.getenv('EPISODES_PER_SEASON', 25))
@@ -51,9 +52,13 @@ UPDATES_CHANNEL = '@bot_paiyan_official'
 try:
     LOG_CHANNEL_ID = int(LOG_CHANNEL_ID)
     DB_CHANNEL_1 = int(DB_CHANNEL_1)
-    ADMIN_USER_IDS = ADMIN_USER_IDS.split(',') if ADMIN_USER_IDS else []
+    ADMIN_USER_IDS = [str(id) for id in ADMIN_USER_IDS.split(',') if id] if ADMIN_USER_IDS else []
 except ValueError as e:
     logger.error(f"Invalid environment variable format: {e}")
+    sys.exit(1)
+
+if not WEBHOOK_URL:
+    logger.error("WEBHOOK_URL not set")
     sys.exit(1)
 
 IS_LOGGING_ENABLED = LOG_CHANNEL_ID != 0 and LOG_CHANNEL_ID < 0
@@ -64,16 +69,42 @@ log_bot = Bot(token=BOT_TOKEN)
 
 # Global variables
 SETTINGS_FILE = "settings.json"
+USERS_FILE = "users.json"
 COVER_PHOTO_ID = None
 FILES_PER_PAGE = 10
 AUTO_DELETE_DURATION = 3600
 RATE_LIMIT = 30 / 60  # 30 requests/min
 SEARCH_CACHE_DURATION = 300  # 5 min
 SEARCH_TIMEOUT = 10  # 10 seconds for search
+BROADCAST_RATE_LIMIT = 30  # 30 messages per second
 
 # Rate limiter and search cache
 rate_limiters = defaultdict(lambda: aiolimiter.AsyncLimiter(RATE_LIMIT, 60))
+broadcast_limiter = aiolimiter.AsyncLimiter(BROADCAST_RATE_LIMIT, 1)
 search_cache = {}
+
+# Load users
+def load_users():
+    try:
+        with open(USERS_FILE, 'r') as f:
+            users = json.load(f)
+            logger.info(f"Loaded {len(users)} users from users.json")
+            return set(users)
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.warning("users.json not found or invalid, starting with empty user list")
+        return set()
+
+def save_users(users):
+    try:
+        with open(USERS_FILE, 'w') as f:
+            json.dump(list(users), f, indent=4)
+        logger.info("Saved users to users.json")
+    except Exception as e:
+        logger.error(f"Failed to save users.json: {e}")
+        if IS_LOGGING_ENABLED:
+            asyncio.create_task(log_bot.send_message(LOG_CHANNEL_ID, f"Failed to save users.json: {e}"))
+
+users = load_users()
 
 # Generate season data
 def generate_season_data():
@@ -110,7 +141,7 @@ def load_settings():
             'cover_pic': None,
             'season_data': generate_season_data()
         }
-        save_settings(default_settings)  # Create settings.json with defaults
+        save_settings(default_settings)
         return default_settings
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in settings.json: {e}")
@@ -154,7 +185,7 @@ LANGUAGES = {
     'season_not_found': 'Season not found. 😔 Use /start to see available seasons.',
     'episode_not_found': 'Episode not found. 😔 Check the number and try again.',
     'invalid_episode': 'Invalid episode number. Use /episode <number> (e.g., /episode 100). 🚫',
-    'help': 'Commands:\n/start - Start bot\n/episode <number> - Get episode link\n/clearhistory - Clear history\n/owner - Owner info\n/mainchannel - Join channel\n/guide - View guide\n🔍 Type text to search (e.g., "naruto").',
+    'help': 'Commands:\n/start - Start bot\n/episode <number> - Get episode link\n/clearhistory - Clear history\n/owner - Owner info\n/mainchannel - Join channel\n/guide - View guide\n/broadcast - Send message to all users (admin)\n/edit - Edit settings (admin)\n🔍 Type text to search (e.g., "naruto").',
     'clearhistory': 'History cleared! 🗑️',
     'owner': 'Owner: @Dhileep_S 👨‍💼',
     'mainchannel': f'Join our channel: {UPDATES_CHANNEL} 📢',
@@ -187,7 +218,10 @@ LANGUAGES = {
     'rate_limit': 'Too many requests! Please wait 60 seconds and try again. ⏲️',
     'retry_error': 'Error occurred. Retrying… 🔄',
     'cancel': 'Operation cancelled. ✅ Back to edit menu.',
-    'refine_search': 'Refine search with a new keyword.'
+    'refine_search': 'Refine search with a new keyword.',
+    'broadcast_prompt': 'Send the message to broadcast to all users.',
+    'broadcast_success': 'Broadcast sent to {success_count} users. Failed: {fail_count}.',
+    'broadcast_invalid': 'Please send a valid text message, photo, or video.'
 }
 
 # Helper functions
@@ -298,7 +332,7 @@ async def search_file_in_channel(context: ContextTypes.DEFAULT_TYPE, query: str,
         try:
             async with timeout(SEARCH_TIMEOUT):
                 async for message in context.bot.get_chat_history(chat_id=DB_CHANNEL_1, limit=200):
-                    if len(matching_files) >= SEARCH_RESULT_LIMIT:  # Dynamic limit
+                    if len(matching_files) >= SEARCH_RESULT_LIMIT:
                         break
                     if message.document or message.video or message.audio or message.photo:
                         file_name = (message.document.file_name if message.document else
@@ -314,7 +348,6 @@ async def search_file_in_channel(context: ContextTypes.DEFAULT_TYPE, query: str,
         except (TelegramError, asyncio.TimeoutError) as e:
             logger.error(f"Error searching channel {DB_CHANNEL_1}: {e}")
 
-    # Sort results alphabetically by file name
     matching_files.sort(key=lambda x: x['file_name'].lower())
     search_cache[cache_key] = {'results': matching_files, 'timestamp': time.time()}
     logger.info(f"User {user_id} searched for '{query}', found {len(matching_files)} results")
@@ -333,6 +366,13 @@ async def retry_with_backoff(coro, max_retries=3, initial_delay=1):
             logger.warning(f"Retry {attempt + 1}/{max_retries} after {delay}s: {e}")
             await asyncio.sleep(delay)
 
+# Webhook handler
+async def webhook(request):
+    update = Update.de_json(await request.json(), bot_app.bot)
+    if update:
+        await bot_app.process_update(update)
+    return web.Response(status=200)
+
 # Health check endpoint
 async def health_check(request):
     return web.Response(text="Bot is running")
@@ -345,6 +385,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with rate_limiters[user_id]:
         if not await check_subscription(context, user_id, chat_id):
             return
+
+        users.add(user_id)
+        save_users(users)
+        logger.info(f"Added user {user_id} to user list")
 
         start_param = context.args[0] if context.args else None
         if start_param and start_param.startswith('season'):
@@ -499,7 +543,7 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with rate_limiters[user_id]:
         if user_id not in ADMIN_USER_IDS:
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['not_allowed'])
-            logger.info(f"User {user_id} attempted /edit")
+            logger.info(f"User {user_id} attempted /edit (not admin)")
             return
 
         user_states[user_id]['edit_state'] = {'stage': 'menu'}
@@ -509,12 +553,13 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_edit_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
-    edit_state = user_states[user_id].get('edit_state', {})
+    edit_state = user_states[user_id].get('edit_state')
     if not edit_state:
         return
 
     async with rate_limiters[user_id]:
         stage = edit_state.get('stage')
+        logger.info(f"User {user_id} in edit stage: {stage}")
         if stage == 'start_text':
             if update.message.text:
                 settings['start_text'] = update.message.text
@@ -523,6 +568,8 @@ async def handle_edit_actions(update: Update, context: ContextTypes.DEFAULT_TYPE
                 user_states[user_id]['edit_state'] = {'stage': 'menu'}
                 await send_message_with_auto_delete(context, chat_id, LANGUAGES['edit_start_text_set'], reply_markup=create_edit_menu_keyboard())
                 logger.info(f"User {user_id} updated start text")
+            else:
+                await send_message_with_auto_delete(context, chat_id, "Please send text.")
         elif stage == 'start_pic':
             if update.message.photo:
                 settings['start_pic'] = update.message.photo[-1].file_id
@@ -551,8 +598,78 @@ async def handle_edit_actions(update: Update, context: ContextTypes.DEFAULT_TYPE
                 edit_state['is_media'] = bool(update.message.photo or update.message.video)
                 edit_state['stage'] = 'confirm'
                 await send_message_with_auto_delete(context, chat_id, LANGUAGES['edit_link_confirm'], reply_markup=create_confirm_keyboard('link_save', edit_state['season_key']))
+                logger.info(f"User {user_id} provided link content for {edit_state['season_key']}")
             else:
                 await send_message_with_auto_delete(context, chat_id, "Send text, photo, or video for the season link.")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    chat_id = update.effective_chat.id
+
+    async with rate_limiters[user_id]:
+        if user_id not in ADMIN_USER_IDS:
+            await send_message_with_auto_delete(context, chat_id, LANGUAGES['not_allowed'])
+            logger.info(f"User {user_id} attempted /broadcast (not admin)")
+            return
+
+        user_states[user_id]['awaiting_broadcast'] = True
+        await send_message_with_auto_delete(context, chat_id, LANGUAGES['broadcast_prompt'])
+        logger.info(f"User {user_id} initiated /broadcast")
+
+async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    chat_id = update.effective_chat.id
+
+    if not user_states[user_id].get('awaiting_broadcast', False):
+        return
+
+    async with rate_limiters[user_id]:
+        if update.message.text or update.message.photo or update.message.video:
+            user_states[user_id]['awaiting_broadcast'] = False
+            success_count = 0
+            fail_count = 0
+            content = update.message.text or update.message.caption or ""
+            photo = update.message.photo[-1].file_id if update.message.photo else None
+            video = update.message.video.file_id if update.message.video else None
+
+            for target_user_id in users:
+                async with broadcast_limiter:
+                    try:
+                        if photo:
+                            await context.bot.send_photo(
+                                chat_id=target_user_id,
+                                photo=photo,
+                                caption=content
+                            )
+                        elif video:
+                            await context.bot.send_video(
+                                chat_id=target_user_id,
+                                video=video,
+                                caption=content
+                            )
+                        else:
+                            await context.bot.send_message(
+                                chat_id=target_user_id,
+                                text=content
+                            )
+                        success_count += 1
+                    except TelegramError as e:
+                        logger.error(f"Failed to send broadcast to {target_user_id}: {e}")
+                        fail_count += 1
+
+            message = LANGUAGES['broadcast_success'].format(
+                success_count=success_count,
+                fail_count=fail_count
+            )
+            await send_message_with_auto_delete(context, chat_id, message)
+            if IS_LOGGING_ENABLED:
+                await log_bot.send_message(
+                    LOG_CHANNEL_ID,
+                    f"Broadcast by {user_id}: {message}"
+                )
+            logger.info(f"User {user_id} completed broadcast: {success_count} succeeded, {fail_count} failed")
+        else:
+            await send_message_with_auto_delete(context, chat_id, LANGUAGES['broadcast_invalid'])
 
 async def edit_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -563,22 +680,27 @@ async def edit_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with rate_limiters[user_id]:
         if user_id not in ADMIN_USER_IDS:
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['not_allowed'])
+            logger.info(f"User {user_id} attempted edit button (not admin)")
             return
 
         if query.data == 'edit_start_text':
             user_states[user_id]['edit_state'] = {'stage': 'start_text'}
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['edit_start_text_prompt'].format(current=settings['start_text']))
+            logger.info(f"User {user_id} selected edit_start_text")
         elif query.data == 'edit_start_pic':
             user_states[user_id]['edit_state'] = {'stage': 'start_pic'}
             current = settings['start_pic'] or "None"
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['edit_start_pic_prompt'].format(current=current))
+            logger.info(f"User {user_id} selected edit_start_pic")
         elif query.data == 'edit_cover':
             user_states[user_id]['edit_state'] = {'stage': 'cover'}
             current = settings['cover_pic'] or "None"
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['edit_cover_prompt'].format(current=current))
+            logger.info(f"User {user_id} selected edit_cover")
         elif query.data == 'edit_link':
             user_states[user_id]['edit_state'] = {'stage': 'select_season', 'type': 'link'}
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['select_season'], reply_markup=create_season_selection_keyboard('link'))
+            logger.info(f"User {user_id} selected edit_link")
         elif query.data.startswith('link_season_'):
             season_key = query.data.split('_', 2)[2]
             if season_key not in season_data:
@@ -592,6 +714,7 @@ async def edit_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'buttons': []
             }
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['edit_link_content_prompt'])
+            logger.info(f"User {user_id} selected season {season_key} for link edit")
         elif query.data.startswith('confirm_'):
             action, data = query.data.split('_', 2)[1:3]
             if action == 'link_save':
@@ -609,6 +732,7 @@ async def edit_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == 'cancel':
             user_states[user_id]['edit_state'] = {'stage': 'menu'}
             await send_message_with_auto_delete(context, chat_id, LANGUAGES['cancel'], reply_markup=create_edit_menu_keyboard())
+            logger.info(f"User {user_id} cancelled edit")
 
 async def handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -811,7 +935,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error handling button: {e}")
             await send_message_with_auto_delete(context, chat_id, f"{LANGUAGES['file_search_error']} {LANGUAGES['retry_error']}")
 
+# Global bot application
+bot_app = None
+
 async def main():
+    global bot_app
     try:
         # Validate environment
         if 'YOUR_BOT_TOKEN' in BOT_TOKEN:
@@ -820,7 +948,7 @@ async def main():
         if LOG_CHANNEL_ID == 0:
             logger.error("Invalid log channel ID")
             sys.exit(1)
-        if not ADMIN_USER_IDS or ADMIN_USER_IDS == ['']:
+        if not ADMIN_USER_IDS:
             logger.error("Invalid admin IDs")
             sys.exit(1)
         if 'YOUR_GPLINK_API' in GPLINK_API:
@@ -838,16 +966,19 @@ async def main():
 
         logger.info(f"Bot configuration: SEARCH_TIMEOUT={SEARCH_TIMEOUT}s, TOTAL_EPISODES={TOTAL_EPISODES}, EPISODES_PER_SEASON={EPISODES_PER_SEASON}, SEARCH_RESULT_LIMIT={SEARCH_RESULT_LIMIT}")
 
-        # Start HTTP server for health checks
+        # Start HTTP server for webhooks and health checks
         app = web.Application()
-        app.add_routes([web.get('/health', health_check)])
+        app.add_routes([
+            web.post('/', webhook),
+            web.get('/health', health_check)
+        ])
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         await site.start()
-        logger.info(f"Health check server started on port {PORT}")
+        logger.info(f"Webhook server started on port {PORT}")
 
-        # Start Telegram bot
+        # Initialize Telegram bot
         bot_app = Application.builder().token(BOT_TOKEN).build()
 
         bot_app.add_handler(CommandHandler('start', start))
@@ -858,13 +989,26 @@ async def main():
         bot_app.add_handler(CommandHandler('guide', guide))
         bot_app.add_handler(CommandHandler('cover', cover))
         bot_app.add_handler(CommandHandler('edit', edit))
+        bot_app.add_handler(CommandHandler('broadcast', broadcast))
         bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selection))
         bot_app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_cover_photo))
+        bot_app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.VIDEO) & ~filters.COMMAND, handle_broadcast_message))
         bot_app.add_handler(CallbackQueryHandler(button))
 
         await bot_app.initialize()
         await bot_app.start()
-        await bot_app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+        # Set webhook
+        webhook_path = f"{WEBHOOK_URL}/"
+        try:
+            await bot_app.bot.set_webhook(webhook_path)
+            logger.info(f"Webhook set to {webhook_path}")
+        except TelegramError as e:
+            logger.error(f"Failed to set webhook: {e}")
+            if IS_LOGGING_ENABLED:
+                await log_bot.send_message(LOG_CHANNEL_ID, f"Failed to set webhook: {e}")
+            sys.exit(1)
+
         logger.info("Bot started")
 
         # Keep the bot running
@@ -873,6 +1017,8 @@ async def main():
 
     except Exception as e:
         logger.error(f"Error in main: {e}")
+        if IS_LOGGING_ENABLED:
+            await log_bot.send_message(LOG_CHANNEL_ID, f"Critical error: {e}")
         sys.exit(1)
 
 if __name__ == '__main__':
