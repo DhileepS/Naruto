@@ -30,14 +30,24 @@ from async_timeout import timeout
 
 # Environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
-LOG_CHANNEL_ID = int(os.getenv('LOG_CHANNEL_ID', '0'))
-DB_CHANNEL_1 = int(os.getenv('DB_CHANNEL_1', '0'))
-ADMIN_USER_IDS = os.getenv('ADMIN_USER_IDS', '').split(',')
+LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID', '0')
+DB_CHANNEL_1 = os.getenv('DB_CHANNEL_1', '0')
+ADMIN_USER_IDS = os.getenv('ADMIN_USER_IDS', '')
 GPLINK_API = os.getenv('GPLINK_API', 'YOUR_GPLINK_API')
 PORT = int(os.getenv('PORT', 10000))
+TOTAL_EPISODES = int(os.getenv('TOTAL_EPISODES', 220))
+EPISODES_PER_SEASON = int(os.getenv('EPISODES_PER_SEASON', 25))
 UPDATES_CHANNEL = '@bot_paiyan_official'
 
 # Validate environment
+try:
+    LOG_CHANNEL_ID = int(LOG_CHANNEL_ID)
+    DB_CHANNEL_1 = int(DB_CHANNEL_1)
+    ADMIN_USER_IDS = ADMIN_USER_IDS.split(',') if ADMIN_USER_IDS else []
+except ValueError as e:
+    logging.error(f"Invalid environment variable format: {e}")
+    sys.exit(1)
+
 IS_LOGGING_ENABLED = LOG_CHANNEL_ID != 0 and LOG_CHANNEL_ID < 0
 IS_DB_ENABLED = DB_CHANNEL_1 != 0 and DB_CHANNEL_1 < 0
 
@@ -57,12 +67,43 @@ SEARCH_TIMEOUT = 10  # 10 seconds for search
 rate_limiters = defaultdict(lambda: aiolimiter.AsyncLimiter(RATE_LIMIT, 60))
 search_cache = {}
 
+# Generate season data
+def generate_season_data():
+    season_data = {}
+    num_seasons = (TOTAL_EPISODES + EPISODES_PER_SEASON - 1) // EPISODES_PER_SEASON
+
+    for season_num in range(1, num_seasons + 1):
+        season_key = f"season_{season_num}"
+        start_episode = (season_num - 1) * EPISODES_PER_SEASON + 1
+        end_episode = min(season_num * EPISODES_PER_SEASON, TOTAL_EPISODES)
+        episodes = {ep_num: f"https://example.com/season{season_num}/episode{ep_num}" for ep_num in range(start_episode, end_episode + 1)}
+        season_data[season_key] = {
+            "start_id_ref": f"https://t.me/Naruto_multilangbot?start=season{season_num}",
+            "episodes": episodes,
+            "content": None,
+            "is_media": False,
+            "buttons": []
+        }
+    logger.info(f"Generated {num_seasons} seasons with {TOTAL_EPISODES} total episodes")
+    return season_data
+
 # Load settings
 def load_settings():
     try:
         with open(SETTINGS_FILE, 'r') as f:
-            return json.load(f)
+            settings = json.load(f)
+            logger.info("Loaded settings from settings.json")
+            return settings
     except FileNotFoundError:
+        logger.warning("settings.json not found, using default settings")
+        return {
+            'start_text': '🌟 Welcome! Choose a season or option:',
+            'start_pic': None,
+            'cover_pic': None,
+            'season_data': generate_season_data()
+        }
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in settings.json: {e}")
         return {
             'start_text': '🌟 Welcome! Choose a season or option:',
             'start_pic': None,
@@ -71,8 +112,12 @@ def load_settings():
         }
 
 def save_settings(settings):
-    with open(SETTINGS_FILE, 'w') as f:
-        json.dump(settings, f, indent=4)
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=4)
+        logger.info("Saved settings to settings.json")
+    except Exception as e:
+        logger.error(f"Failed to save settings.json: {e}")
 
 settings = load_settings()
 COVER_PHOTO_ID = settings['cover_pic']
@@ -125,32 +170,11 @@ LANGUAGES = {
     'edit_link_saved': 'Season link settings saved! ✅',
     'loading': 'Processing your request… ⏳',
     'searching': 'Trying to find your query... 🔍',
-    'rate_limit': 'Too many requests! Wait a moment and try again. ⏲️',
+    'rate_limit': 'Too many requests! Please wait 60 seconds and try again. ⏲️',
     'retry_error': 'Error occurred. Retrying… 🔄',
     'cancel': 'Operation cancelled. ✅ Back to edit menu.',
     'refine_search': 'Refine search with a new keyword.'
 }
-
-# Generate season data
-def generate_season_data():
-    season_data = {}
-    episodes_per_season = 25
-    total_episodes = 220
-    num_seasons = (total_episodes + episodes_per_season - 1) // episodes_per_season
-
-    for season_num in range(1, num_seasons + 1):
-        season_key = f"season_{season_num}"
-        start_episode = (season_num - 1) * episodes_per_season + 1
-        end_episode = min(season_num * episodes_per_season, total_episodes)
-        episodes = {ep_num: f"https://example.com/season{season_num}/episode{ep_num}" for ep_num in range(start_episode, end_episode + 1)}
-        season_data[season_key] = {
-            "start_id_ref": f"https://t.me/Naruto_multilangbot?start=season{season_num}",
-            "episodes": episodes,
-            "content": None,
-            "is_media": False,
-            "buttons": []
-        }
-    return season_data
 
 # Helper functions
 def create_link_keyboard():
@@ -276,6 +300,8 @@ async def search_file_in_channel(context: ContextTypes.DEFAULT_TYPE, query: str,
         except (TelegramError, asyncio.TimeoutError) as e:
             logger.error(f"Error searching channel {DB_CHANNEL_1}: {e}")
 
+    # Sort results alphabetically by file name
+    matching_files.sort(key=lambda x: x['file_name'].lower())
     search_cache[cache_key] = {'results': matching_files, 'timestamp': time.time()}
     return matching_files
 
@@ -338,7 +364,7 @@ async def episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             episode_number = int(context.args[0])
-            if episode_number < 1 or episode_number > 220:
+            if episode_number < 1 or episode_number > TOTAL_EPISODES:
                 await send_message_with_auto_delete(context, chat_id, LANGUAGES['invalid_episode'])
                 return
 
@@ -416,7 +442,6 @@ async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    nonconsecutive_message_id = update.message.message_id
     chat_id = update.effective_chat.id
 
     async with rate_limiters[user_id]:
@@ -792,6 +817,11 @@ async def main():
         if not IS_DB_ENABLED:
             logger.error("Invalid database channel ID")
             sys.exit(1)
+        if TOTAL_EPISODES <= 0 or EPISODES_PER_SEASON <= 0:
+            logger.error("Invalid TOTAL_EPISODES or EPISODES_PER_SEASON")
+            sys.exit(1)
+
+        logger.info(f"Bot configuration: SEARCH_TIMEOUT={SEARCH_TIMEOUT}s, TOTAL_EPISODES={TOTAL_EPISODES}, EPISODES_PER_SEASON={EPISODES_PER_SEASON}")
 
         app = Application.builder().token(BOT_TOKEN).build()
 
