@@ -1,3 +1,10 @@
+# Required dependencies: Install via `pip install -r requirements.txt`
+# requirements.txt should include:
+# python-telegram-bot==20.7
+# aiohttp==3.9.5
+# aiolimiter==1.1.0
+# async-timeout==4.0.3
+
 import logging
 import asyncio
 import sys
@@ -409,6 +416,7 @@ async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
+    nonconsecutive_message_id = update.message.message_id
     chat_id = update.effective_chat.id
 
     async with rate_limiters[user_id]:
